@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>WhatsApp AgentKit — banner 1280x640</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     Tarjeta de 1280x640 para el README y el social preview.
+     Sin fuentes externas ni CDN: se renderiza igual en headless.
+     Fondo solido propio, para que se vea bien sobre el tema claro
+     y el tema oscuro de GitHub.
+     ───────────────────────────────────────────────────────────── */
+  :root{
+    --ink:#0A0B0A; --ink2:#0E100E; --ink3:#161915;
+    --bone:#ECEBE4; --muted:#8E9488;
+    --lime:#C8F24E; --amber:#FF8A3D;
+    --line:rgba(236,235,228,.13);
+    --line-soft:rgba(236,235,228,.07);
+    --sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "DejaVu Sans Mono", monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{background:#0A0B0A}
+  body{
+    width:1280px; height:640px; overflow:hidden;
+    font-family:var(--sans); color:var(--bone);
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .card{
+    position:relative; width:1280px; height:640px; overflow:hidden;
+    background:#0A0B0A;
+    border:1px solid rgba(236,235,228,.10);
+    display:flex; flex-direction:column;
+    padding:54px 64px 46px;
+  }
+  .card > *{position:relative; z-index:2}
+
+  /* barra de acento superior */
+  .accent-bar{
+    position:absolute; top:0; left:0; right:0; height:5px; z-index:3;
+    background:linear-gradient(90deg, var(--lime) 0%, var(--lime) 34%, var(--amber) 62%, rgba(255,138,61,.15) 100%);
+  }
+
+  /* texturas */
+  .tex{position:absolute; inset:0; z-index:0; pointer-events:none}
+  .tex .grid{
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(to right, rgba(236,235,228,.055) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(236,235,228,.055) 1px, transparent 1px);
+    background-size:64px 64px;
+    -webkit-mask-image:radial-gradient(110% 90% at 22% 0%, #000 0%, rgba(0,0,0,.5) 48%, transparent 88%);
+    mask-image:radial-gradient(110% 90% at 22% 0%, #000 0%, rgba(0,0,0,.5) 48%, transparent 88%);
+  }
+  .tex .glow-a{
+    position:absolute; top:-260px; left:-160px; width:760px; height:760px; border-radius:50%;
+    background:radial-gradient(circle, rgba(200,242,78,.13) 0%, rgba(200,242,78,0) 62%);
+  }
+  .tex .glow-b{
+    position:absolute; bottom:-320px; right:-220px; width:700px; height:700px; border-radius:50%;
+    background:radial-gradient(circle, rgba(255,138,61,.10) 0%, rgba(255,138,61,0) 62%);
+  }
+  .tex .grain{
+    position:absolute; inset:0; opacity:.06; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .mono{font-family:var(--mono)}
+
+  /* ── cabecera ─────────────────────────────────────────────── */
+  .head{display:flex; align-items:center; justify-content:space-between; gap:24px}
+  .brand{display:flex; align-items:center; gap:12px}
+  .brand span{
+    font-family:var(--mono); font-size:15px; letter-spacing:.22em; text-transform:uppercase; color:var(--bone);
+  }
+  .head .meta{
+    font-family:var(--mono); font-size:14px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted);
+  }
+  .head .meta b{color:var(--lime); font-weight:500}
+
+  /* ── cuerpo ───────────────────────────────────────────────── */
+  .body{flex:1; display:grid; grid-template-columns:1fr 452px; gap:56px; align-items:center; padding-top:30px}
+
+  h1{
+    font-size:88px; line-height:.94; letter-spacing:-.045em; font-weight:800; color:var(--bone);
+  }
+  h1 .u{position:relative; display:inline-block}
+  h1 .u svg{position:absolute; left:0; bottom:-10px; width:100%; height:14px}
+
+  .pitch{
+    margin-top:26px; font-size:25px; line-height:1.5; letter-spacing:-.012em; color:var(--muted); max-width:24ch;
+  }
+  .pitch b{color:var(--bone); font-weight:600}
+
+  .badges{display:flex; flex-wrap:wrap; gap:10px; margin-top:30px}
+  .badge{
+    display:inline-flex; align-items:center; gap:8px; padding:8px 13px;
+    border:1px solid var(--line); border-radius:2px; background:rgba(236,235,228,.025);
+    font-family:var(--mono); font-size:14.5px; letter-spacing:.03em; color:var(--muted); white-space:nowrap;
+  }
+  .badge b{color:var(--bone); font-weight:500}
+  .badge.hot{border-color:rgba(200,242,78,.42); background:rgba(200,242,78,.08)}
+  .badge.hot b{color:var(--lime)}
+
+  /* ── panel derecho ────────────────────────────────────────── */
+  .panel{
+    position:relative; background:var(--ink2); border:1px solid var(--line); border-radius:3px;
+    box-shadow:inset 0 1px 0 rgba(236,235,228,.05), 0 34px 70px -40px rgba(0,0,0,1);
+  }
+  .panel::before,.panel::after{
+    content:""; position:absolute; width:11px; height:11px; border-color:var(--lime); opacity:.55;
+  }
+  .panel::before{top:-1px; left:-1px; border-top:1px solid; border-left:1px solid}
+  .panel::after{bottom:-1px; right:-1px; border-bottom:1px solid; border-right:1px solid}
+
+  .term-bar{
+    display:flex; align-items:center; gap:9px; padding:12px 15px;
+    border-bottom:1px solid var(--line); background:rgba(236,235,228,.025);
+  }
+  .dot{width:9px; height:9px; border:1px solid rgba(236,235,228,.3); border-radius:1px}
+  .term-bar .path{font-family:var(--mono); font-size:13px; color:var(--muted); letter-spacing:.06em; margin-left:6px}
+  .term{padding:18px 18px 20px; font-family:var(--mono); font-size:16px; line-height:1.95}
+  .term .row{display:flex; gap:10px; white-space:nowrap}
+  .term .p{color:var(--lime)}
+  .term .c{color:var(--bone)}
+  .term .c .dim{color:var(--muted)}
+  .term .run{color:var(--lime)}
+  .cursor{display:inline-block; width:9px; height:16px; background:var(--lime); vertical-align:-3px; margin-left:5px}
+
+  .sep{
+    display:flex; align-items:center; gap:12px; margin:16px 2px;
+    font-family:var(--mono); font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted);
+  }
+  .sep i{flex:1; height:1px; background:var(--line); display:block}
+
+  .chat{padding:15px 15px 17px}
+  .chat .who{display:flex; align-items:center; gap:9px; padding-bottom:11px; border-bottom:1px solid var(--line-soft)}
+  .chat .av{
+    width:26px; height:26px; border-radius:50%; background:linear-gradient(140deg,#C8F24E,#7ea52c);
+    display:flex; align-items:center; justify-content:center; color:#0A0B0A; font-weight:700; font-size:13px;
+    font-family:var(--mono);
+  }
+  .chat .nm{font-size:15px; font-weight:700; color:var(--bone)}
+  .chat .st{font-family:var(--mono); font-size:11.5px; color:var(--lime); letter-spacing:.1em; text-transform:uppercase}
+  .msgs{display:flex; flex-direction:column; gap:9px; padding-top:12px}
+  .b{max-width:92%; padding:10px 13px; font-size:15px; line-height:1.45; border:1px solid var(--line)}
+  .b.in{background:var(--ink3); border-radius:3px 12px 12px 12px; align-self:flex-start}
+  .b.out{background:rgba(200,242,78,.09); border-color:rgba(200,242,78,.3); border-radius:12px 3px 12px 12px; align-self:flex-end}
+
+  /* ── pie ──────────────────────────────────────────────────── */
+  .foot{
+    display:flex; align-items:center; justify-content:space-between; gap:24px;
+    padding-top:22px; border-top:1px solid var(--line-soft);
+    font-family:var(--mono); font-size:15px; letter-spacing:.04em; color:var(--muted);
+  }
+  .foot .repo{color:var(--bone)}
+  .foot .right{display:flex; align-items:center; gap:10px}
+  .foot .tag{color:var(--lime)}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="accent-bar"></div>
+  <div class="tex">
+    <div class="glow-a"></div>
+    <div class="glow-b"></div>
+    <div class="grid"></div>
+    <div class="grain"></div>
+  </div>
+
+  <!-- cabecera -->
+  <div class="head">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 32 32" fill="none" style="color:#C8F24E">
+        <rect x="2.5" y="3.5" width="27" height="21" rx="3" stroke="currentColor" stroke-width="2"/>
+        <path d="M9 24.5V30l6-5.5" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M10.5 10.5l4 3.5-4 3.5" stroke="#ECEBE4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M17.5 18h5.5" stroke="#ECEBE4" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>AgentKit</span>
+    </div>
+    <div class="meta">open source &middot; mit &middot; <b>hecho en LATAM</b></div>
+  </div>
+
+  <!-- cuerpo -->
+  <div class="body">
+
+    <div>
+      <h1>
+        WhatsApp<br>
+        <span class="u">AgentKit<svg viewBox="0 0 300 12" preserveAspectRatio="none"><path d="M2 8.5C60 3.5 120 3 160 5.5c40 2.5 90 3.5 138 1" stroke="#C8F24E" stroke-width="3.4" fill="none" stroke-linecap="round"/></svg></span>
+      </h1>
+
+      <p class="pitch">
+        Tu agente de WhatsApp con IA, construido por Claude Code en menos de 30 minutos.
+        <b>Sin escribir una línea de código.</b>
+      </p>
+
+      <div class="badges">
+        <span class="badge hot">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="#C8F24E"><path d="M8 .5l2.24 4.54 5.01.73-3.62 3.53.85 4.99L8 11.94l-4.48 2.35.85-4.99L.75 5.77l5.01-.73L8 .5Z"/></svg>
+          <b>422</b>
+        </span>
+        <span class="badge">Licencia <b>MIT</b></span>
+        <span class="badge">Python <b>3.11+</b></span>
+        <span class="badge">Claude <b>Sonnet</b></span>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="term-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="path">~/whatsapp-agentkit</span>
+        </div>
+        <div class="term">
+          <div class="row"><span class="p">$</span><span class="c">git clone <span class="dim">.../whatsapp-agentkit</span></span></div>
+          <div class="row"><span class="p">$</span><span class="c">bash start.sh</span></div>
+          <div class="row"><span class="p">$</span><span class="c run">/build-agent<span class="cursor"></span></span></div>
+        </div>
+      </div>
+
+      <div class="sep"><i></i>30 minutos después<i></i></div>
+
+      <div class="panel chat">
+        <div class="who">
+          <span class="av">S</span>
+          <span class="nm">Sofía</span>
+          <span class="st">en línea</span>
+        </div>
+        <div class="msgs">
+          <div class="b in">Hola, ¿tienen mesa para 4 el viernes 9pm?</div>
+          <div class="b out">Sí, nos queda una en la terraza. ¿La reservo a tu nombre?</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- pie -->
+  <div class="foot">
+    <span class="repo">github.com/Hainrixz/whatsapp-agentkit</span>
+    <span class="right">Todo de IA <span class="tag">&middot;</span> @soyenriquerocha</span>
+  </div>
+</div>
+
+</body>
+</html>

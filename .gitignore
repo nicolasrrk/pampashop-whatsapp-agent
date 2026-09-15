@@ -1,0 +1,28 @@
+# Secretos — NUNCA subir
+.env
+
+# Base de datos local
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Knowledge (archivos privados del negocio)
+knowledge/*
+!knowledge/.gitkeep
+
+# Session state
+config/session.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
