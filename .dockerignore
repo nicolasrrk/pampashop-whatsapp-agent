@@ -14,4 +14,7 @@ venv/
 README.md
 CLAUDE.md
 docs/
-scripts/
+# scripts/ SI va a la imagen: bandeja.py y leads.py se corren en el server,
+# que es donde esta la base con los borradores pendientes.
+*.bak
+*.bak.*

@@ -7,6 +7,7 @@ Funciona con cualquier proveedor (Zernio, Meta) gracias a la capa de providers.
 """
 
 import asyncio
+import json
 import logging
 import os
 from collections import defaultdict
@@ -17,13 +18,18 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent.brain import generar_respuesta, obtener_mensaje_error
+from agent.escalacion import avisar_canal_interno, detectar_palabra_clave, obtener_mensaje_escalacion
 from agent.memory import (
+    crear_borrador,
+    esta_escalado,
     guardar_mensaje,
     inicializar_db,
     liberar_evento,
     limpiar_eventos_viejos,
+    marcar_escalado,
     marcar_evento_procesado,
     obtener_historial,
+    registrar_contacto,
 )
 from agent.providers import obtener_proveedor
 from agent.providers.base import MensajeEntrante
@@ -31,6 +37,11 @@ from agent.providers.base import MensajeEntrante
 load_dotenv()
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# El default es "borrador", igual que whatsapp-closer-agentkit: el agente redacta,
+# muestra y espera aprobacion antes de que le llegue algo al cliente. Solo pasa a
+# mandar directo si se pone MODO_ENVIO=automatico a proposito.
+MODO_ENVIO = (os.getenv("MODO_ENVIO") or "borrador").strip().lower()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -175,10 +186,35 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
     async with _candados[msg.telefono]:
         try:
+            # CRM: se registra CUALQUIER mensaje entrante, escale o no, para que
+            # scripts/leads.py muestre quien escribio sin tener que abrir WhatsApp.
+            await registrar_contacto(msg.telefono, msg.texto)
+
+            # Si ya escalamos este numero antes, el agente no le vuelve a contestar
+            # nunca mas: lo dejo para que lo siga una persona, igual que
+            # whatsapp-closer-agentkit ("desde aca no se contesta mas en este chat").
+            if await esta_escalado(msg.telefono):
+                logger.info(f"{msg.telefono} ya esta escalado: no se le contesta")
+                return
+
+            palabra = detectar_palabra_clave(msg.texto)
+            if palabra:
+                await _escalar_a_humano(msg, evento_id, palabra)
+                return
+
             # El historial se lee ANTES de guardar el mensaje actual: brain.py agrega
             # el mensaje nuevo al final, y asi no queda duplicado.
             historial = await obtener_historial(msg.telefono)
             respuesta, es_respuesta_real = await generar_respuesta(msg.texto, historial)
+
+            # Los avisos tecnicos (error/fallback) se mandan directo: frenarlos a
+            # esperar aprobacion solo deja al cliente sin nada mas tiempo.
+            if es_respuesta_real and MODO_ENVIO == "borrador":
+                await crear_borrador(msg.telefono, msg.texto, respuesta, json.dumps(msg.contexto))
+                logger.info(
+                    f"Borrador creado para {msg.telefono}. Revisar con: python scripts/bandeja.py"
+                )
+                return
 
             enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta, msg.contexto)
 
@@ -207,3 +243,28 @@ async def procesar_mensaje(msg: MensajeEntrante):
                 await proveedor.enviar_mensaje(msg.telefono, obtener_mensaje_error(), msg.contexto)
             except Exception:  # noqa: BLE001
                 logger.error("Tampoco se pudo avisarle al cliente del error")
+
+
+async def _escalar_a_humano(msg: MensajeEntrante, evento_id: str, palabra: str):
+    """
+    Marca el numero como escalado, avisa por el canal interno, y manda (o deja en
+    borrador) el unico mensaje de aviso al cliente. El aviso interno sale siempre,
+    con o sin modo borrador: es una notificacion para el equipo, no algo que el
+    cliente vea, asi que no tiene sentido frenarlo a esperar aprobacion.
+    """
+    mensaje_escalacion = obtener_mensaje_escalacion()
+    await marcar_escalado(msg.telefono)
+    await avisar_canal_interno(msg.telefono, msg.texto, f"palabra clave: {palabra}")
+
+    if MODO_ENVIO == "borrador":
+        await crear_borrador(msg.telefono, msg.texto, mensaje_escalacion, json.dumps(msg.contexto))
+        logger.info(f"{msg.telefono} escalado por '{palabra}'. Aviso pendiente en scripts/bandeja.py")
+        return
+
+    enviado = await proveedor.enviar_mensaje(msg.telefono, mensaje_escalacion, msg.contexto)
+    if enviado:
+        await guardar_mensaje(msg.telefono, "user", msg.texto)
+        await guardar_mensaje(msg.telefono, "assistant", mensaje_escalacion)
+    else:
+        await liberar_evento(evento_id)
+    logger.info(f"{msg.telefono} escalado por palabra clave '{palabra}'")

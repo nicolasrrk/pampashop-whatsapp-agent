@@ -32,6 +32,21 @@ agente:
     negocio), aclarando que el horario de atención personal es el mismo que el del
     local: Lunes a Viernes 8:30 a 12:00 y 17:00 a 20:30, Sábados 9:00 a 12:30 y 17:00
     a 21:00.
+  # Escalacion por palabra clave, igual que whatsapp-closer-agentkit: si el cliente
+  # escribe alguna de estas palabras, el agente deja un unico mensaje fijo y no
+  # vuelve a contestar ese numero hasta que alguien lo reactive (ver scripts/leads.py).
+  # El aviso sale por ESCALACION_SLACK_WEBHOOK o ESCALACION_WHATSAPP_NUMERO en el .env.
+  escalacion_config:
+    palabras_clave:
+      - "humano"
+      - "persona real"
+      - "reclamo"
+      - "estafa"
+      - "cancelar"
+      - "hablar con alguien"
+    mensaje: >
+      Te sigue una persona de nuestro equipo a partir de ahora. En breve se pone en
+      contacto con vos por acá.
 
 integraciones:
   tienda_nube:

@@ -1,5 +1,7 @@
 # Secretos — NUNCA subir
 .env
+.env.bak.*
+*.bak
 
 # Base de datos local
 *.db

@@ -41,7 +41,10 @@ MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS") or "4096")
 # Tope de idas y vueltas de herramientas por mensaje del cliente. Sin este limite, un
 # encadenamiento raro de tool use podria quedar dando vueltas y disparar el costo y la
 # latencia de un solo mensaje de WhatsApp.
-MAX_PASOS_HERRAMIENTAS = 5
+# Estaba en 5 y se quedaba corto: un mensaje con dos intenciones ("tenes moleca 39? y
+# hacen envio a Fontana?") gasta varias busquedas mas un obtener_detalle_producto por
+# cada modelo candidato, y llegaba al tope sin contestar nunca.
+MAX_PASOS_HERRAMIENTAS = int(os.getenv("GROQ_MAX_PASOS_HERRAMIENTAS") or "10")
 
 # ── Herramientas disponibles para el modelo ─────────────────────────────────
 # Formato de function calling estilo OpenAI (el que usa la API de Groq). Los nombres y
@@ -171,6 +174,13 @@ def _limpiar_formato_whatsapp(texto: str) -> str:
     texto = re.sub(r"__(.+?)__", r"*\1*", texto)
     # Titulos markdown ("# Titulo", "## Titulo") -> el texto solo, sin los numerales
     texto = re.sub(r"(?m)^#{1,6}\s*", "", texto)
+    # Vinetas al principio de linea ("- Borcego $67.660", "* Borcego", "+ Borcego") ->
+    # se borran. WhatsApp no las renderiza: al cliente le llega el guion literal. Ojo con
+    # el orden: esto va DESPUES de la regla de negrita, porque un "*negrita*" al principio
+    # de linea no es una vineta y no hay que tocarlo. Por eso se exige el espacio.
+    texto = re.sub(r"(?m)^\s*[-*+]\s+", "", texto)
+    # Listas numeradas ("1. Borcego") -> igual que arriba, se deja solo el texto.
+    texto = re.sub(r"(?m)^\s*\d+[.)]\s+", "", texto)
     return texto.strip()
 
 
@@ -212,13 +222,17 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, b
     mensajes.extend({"role": m["role"], "content": m["content"]} for m in historial)
     mensajes.append({"role": "user", "content": mensaje})
 
-    async def _llamar():
+    async def _llamar(con_herramientas: bool = True):
+        extra = (
+            {"tools": TOOLS, "tool_choice": "auto"}
+            if con_herramientas
+            else {}  # sin herramientas: el modelo no puede pedir mas y tiene que redactar
+        )
         return await client.chat.completions.create(
             model=MODELO,
             max_tokens=MAX_TOKENS,
             messages=mensajes,
-            tools=TOOLS,
-            tool_choice="auto",
+            **extra,
             # Sin esto, con tool use activo el modelo puede devolver su razonamiento
             # interno mezclado en el mismo texto de la respuesta (tags <think>), y el
             # cliente terminaria leyendo eso por WhatsApp. "parsed" lo separa aparte.
@@ -264,9 +278,26 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, b
             respuesta = await _llamar()
 
         if respuesta.choices[0].finish_reason == "tool_calls":
+            # Se agotaron los pasos y el modelo seguia pidiendo herramientas. Antes esto
+            # caia en el fallback ("no llegue a entender bien eso") y el cliente perdia
+            # todo lo que ya se habia averiguado. En vez de eso se pide una ultima
+            # respuesta SIN herramientas: ya no puede pedir mas y tiene que redactar con
+            # lo que junto hasta aca, que suele alcanzar de sobra.
             logger.warning(
-                f"Se llego al tope de {MAX_PASOS_HERRAMIENTAS} pasos de herramientas sin una respuesta final"
+                f"Se llego al tope de {MAX_PASOS_HERRAMIENTAS} pasos de herramientas: "
+                "se pide el cierre sin herramientas"
             )
+            mensajes.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "No podes pedir mas herramientas. Contestale al cliente ahora con "
+                        "la informacion que ya tenes. Si algo quedo sin averiguar, decilo "
+                        "con naturalidad y ofrece averiguarlo, pero nunca lo inventes."
+                    ),
+                }
+            )
+            respuesta = await _llamar(con_herramientas=False)
 
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error llamando a Groq: {e}")

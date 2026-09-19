@@ -78,6 +78,46 @@ class EventoProcesado(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora, index=True)
 
 
+class Lead(Base):
+    """
+    CRM minimo: un renglon por telefono que escribio alguna vez.
+
+    "escalado" es lo que hace que el agente deje de contestar ese numero: una vez en
+    True, main.py ya no lo vuelve a poner en False solo — lo reactiva una persona
+    (ver scripts/leads.py).
+    """
+
+    __tablename__ = "leads"
+
+    telefono: Mapped[str] = mapped_column(String(50), primary_key=True)
+    ultimo_mensaje: Mapped[str] = mapped_column(Text)
+    veces_contactado: Mapped[int] = mapped_column(Integer, default=1)
+    escalado: Mapped[bool] = mapped_column(default=False)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
+class Borrador(Base):
+    """
+    Una respuesta que el agente redacto pero todavia no mando.
+
+    Modo borrador (el default): el agente redacta, guarda acá y espera. Nada le llega
+    al cliente hasta que alguien lo aprueba con scripts/bandeja.py.
+    """
+
+    __tablename__ = "borradores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    mensaje_cliente: Mapped[str] = mapped_column(Text)
+    respuesta: Mapped[str] = mapped_column(Text)
+    # Serializado como JSON: lo que el proveedor necesita para poder enviar despues
+    # (para Zernio, conversation_id/account_id; Meta no necesita nada).
+    contexto_json: Mapped[str] = mapped_column(Text, default="{}")
+    estado: Mapped[str] = mapped_column(String(20), default="pendiente", index=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
 async def inicializar_db():
     """Crea las tablas si no existen."""
     async with engine.begin() as conn:
@@ -169,3 +209,101 @@ async def limpiar_historial(telefono: str):
     async with async_session() as session:
         await session.execute(delete(Mensaje).where(Mensaje.telefono == telefono))
         await session.commit()
+
+
+# ── CRM: leads ───────────────────────────────────────────────────────────────
+
+
+async def registrar_contacto(telefono: str, mensaje: str) -> Lead:
+    """
+    Crea o actualiza el lead de ese telefono con su ultimo mensaje.
+
+    Se llama en CADA mensaje entrante, este o no escalado: es lo que le permite al
+    dueno del negocio ver en scripts/leads.py quien escribio y que dijo, sin tener
+    que entrar a WhatsApp.
+    """
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is None:
+            lead = Lead(telefono=telefono, ultimo_mensaje=mensaje, veces_contactado=1)
+            session.add(lead)
+        else:
+            lead.ultimo_mensaje = mensaje
+            lead.veces_contactado += 1
+            lead.actualizado_en = ahora()
+        await session.commit()
+        await session.refresh(lead)
+        return lead
+
+
+async def esta_escalado(telefono: str) -> bool:
+    """True si ese telefono ya paso a un humano: el agente no le vuelve a contestar."""
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        return bool(lead and lead.escalado)
+
+
+async def marcar_escalado(telefono: str):
+    """Marca el lead como escalado. Desde aca el agente deja de contestarle."""
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is not None:
+            lead.escalado = True
+            lead.actualizado_en = ahora()
+            await session.commit()
+
+
+async def reactivar_lead(telefono: str):
+    """Vuelve a habilitar al agente para contestarle a ese telefono. Lo usa una persona a mano."""
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is not None:
+            lead.escalado = False
+            lead.actualizado_en = ahora()
+            await session.commit()
+
+
+async def listar_leads(limite: int = 50) -> list[Lead]:
+    """Los leads mas recientes primero, para revisar quien escribio."""
+    async with async_session() as session:
+        resultado = await session.execute(
+            select(Lead).order_by(Lead.actualizado_en.desc()).limit(limite)
+        )
+        return list(resultado.scalars().all())
+
+
+# ── Modo borrador ──────────────────────────────────────────────────────────
+
+
+async def crear_borrador(telefono: str, mensaje_cliente: str, respuesta: str, contexto_json: str) -> int:
+    """Guarda una respuesta redactada, pendiente de aprobacion. Devuelve su id."""
+    async with async_session() as session:
+        borrador = Borrador(
+            telefono=telefono,
+            mensaje_cliente=mensaje_cliente,
+            respuesta=respuesta,
+            contexto_json=contexto_json,
+            estado="pendiente",
+        )
+        session.add(borrador)
+        await session.commit()
+        await session.refresh(borrador)
+        return borrador.id
+
+
+async def listar_borradores_pendientes() -> list[Borrador]:
+    """Los borradores que todavia nadie aprobo ni descarto, mas viejo primero."""
+    async with async_session() as session:
+        resultado = await session.execute(
+            select(Borrador).where(Borrador.estado == "pendiente").order_by(Borrador.id.asc())
+        )
+        return list(resultado.scalars().all())
+
+
+async def marcar_borrador(borrador_id: int, estado: str):
+    """Pasa un borrador a 'aprobado' o 'descartado'."""
+    async with async_session() as session:
+        borrador = await session.get(Borrador, borrador_id)
+        if borrador is not None:
+            borrador.estado = estado
+            await session.commit()

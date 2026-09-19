@@ -19,6 +19,20 @@ from agent.providers.base import MensajeEntrante, ProveedorWhatsApp
 logger = logging.getLogger("agentkit")
 
 
+def _numero_para_enviar(telefono: str) -> str:
+    """
+    Los celulares de Argentina llegan en los webhooks con un "9" extra despues del
+    codigo de pais (ej: 5493624548139, el formato historico "9 + 10 digitos"), pero
+    el endpoint de ENVIO de la Cloud API los rechaza con (#131030) "Recipient phone
+    number not in allowed list" si se les manda ese mismo numero de vuelta: hay que
+    sacarle el "9" antes de responder. Confirmado a mano contra la API: mandar a
+    "543624548139" funciona, mandar a "5493624548139" no, para el mismo destinatario.
+    """
+    if telefono.startswith("549") and len(telefono) == 13:
+        return "54" + telefono[3:]
+    return telefono
+
+
 class ProveedorMeta(ProveedorWhatsApp):
     """Proveedor de WhatsApp usando la API oficial de Meta (Cloud API)."""
 
@@ -125,7 +139,7 @@ class ProveedorMeta(ProveedorWhatsApp):
                     url,
                     json={
                         "messaging_product": "whatsapp",
-                        "to": telefono,
+                        "to": _numero_para_enviar(telefono),
                         "type": "text",
                         "text": {"body": mensaje},
                     },
