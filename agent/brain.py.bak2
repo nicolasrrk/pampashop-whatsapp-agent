@@ -17,7 +17,7 @@ import re
 
 import yaml
 from dotenv import load_dotenv
-from groq import AsyncGroq, RateLimitError
+from groq import AsyncGroq
 
 from agent.tools import buscar_productos_tienda_nube, consultar_pedido, obtener_detalle_producto
 
@@ -60,14 +60,7 @@ TOOLS = [
                 "palabra clave (ej: 'sandalia vizzano negra', 'zapatilla nino'). Devuelve "
                 "una lista con id, nombre, marca, rango de precio y si tiene stock. "
                 "Usala SIEMPRE que el cliente pregunte por un producto especifico, antes "
-                "de dar cualquier dato de talle, precio o stock. "
-                "Buscá UNA sola vez por producto, con el termino mas simple que lo "
-                "identifique (la marca y el tipo de calzado alcanzan: 'zapatilla moleca'). "
-                "NO agregues el talle ni el color a la busqueda, porque el buscador "
-                "matchea por nombre y el talle no esta en el nombre: para saber si hay "
-                "un talle usá obtener_detalle_producto sobre el id que ya encontraste. "
-                "Si una busqueda no trae lo que esperabas, NO la repitas con variantes "
-                "parecidas: contestale al cliente con lo que encontraste."
+                "de dar cualquier dato de talle, precio o stock."
             ),
             "parameters": {
                 "type": "object",
@@ -161,19 +154,6 @@ def obtener_mensaje_error() -> str:
     )
 
 
-def obtener_mensaje_saturado() -> str:
-    """
-    Aviso para cuando Groq esta saturado (429). Se distingue del error generico a
-    proposito: el cliente tiene que entender que su mensaje llego y que vale la pena
-    esperar, no que algo se rompio.
-    """
-    config = cargar_config_prompts()
-    return config.get(
-        "saturado_message",
-        "Perdón, estoy con muchas consultas en este momento. Dame un minutito y te respondo.",
-    )
-
-
 def obtener_mensaje_fallback() -> str:
     """Que decirle al cliente cuando no se entendio el mensaje."""
     return cargar_config_prompts().get(
@@ -204,37 +184,18 @@ def _limpiar_formato_whatsapp(texto: str) -> str:
     return texto.strip()
 
 
-async def _ejecutar_herramienta(nombre: str, entrada: dict, cache: dict | None = None) -> str:
-    """
-    Ejecuta una herramienta pedida por el modelo y devuelve el resultado como texto.
-
-    "cache" vive lo que dura UN mensaje del cliente y guarda lo que ya se consulto.
-    El modelo tiende a repetir la misma busqueda con variantes ("moleca", "zapatilla
-    moleca", "zapatilla Moleca 38"): cada repeticion es un turno mas contra Groq, que
-    suma latencia, gasta el tope de pasos y ayuda a llegar al rate limit. Si la llamada
-    es identica a una anterior se devuelve lo guardado, sin pegarle de nuevo a Tienda
-    Nube ni gastar el turno.
-    """
-    clave = (nombre, json.dumps(entrada, sort_keys=True))
-    if cache is not None and clave in cache:
-        logger.info(f"Herramienta {nombre} repetida con {entrada}: se usa el resultado cacheado")
-        return cache[clave]
-
+async def _ejecutar_herramienta(nombre: str, entrada: dict) -> str:
+    """Ejecuta una herramienta pedida por el modelo y devuelve el resultado como texto."""
     funcion = _HERRAMIENTAS.get(nombre)
     if funcion is None:
         logger.warning(f"El modelo pidio una herramienta desconocida: {nombre}")
         return f"Herramienta '{nombre}' no existe."
 
     try:
-        resultado = await funcion(entrada)
+        return await funcion(entrada)
     except Exception as e:  # noqa: BLE001 — una herramienta rota no debe tirar la conversacion
         logger.exception(f"Error ejecutando la herramienta {nombre} con {entrada}: {e}")
-        # El error NO se cachea: puede ser un problema pasajero de red con Tienda Nube.
         return "Hubo un error consultando esa informacion. Segui con lo que sepas o avisale al cliente."
-
-    if cache is not None:
-        cache[clave] = resultado
-    return resultado
 
 
 async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, bool]:
@@ -279,7 +240,6 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, b
         )
 
     pasos = 0
-    cache_herramientas: dict = {}  # dura solo este mensaje; ver _ejecutar_herramienta
     try:
         respuesta = await _llamar()
 
@@ -310,7 +270,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, b
                 except json.JSONDecodeError:
                     entrada = {}
                 logger.info(f"El modelo pidio la herramienta {tc.function.name} con {entrada}")
-                resultado = await _ejecutar_herramienta(tc.function.name, entrada, cache_herramientas)
+                resultado = await _ejecutar_herramienta(tc.function.name, entrada)
                 mensajes.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": resultado}
                 )
@@ -339,12 +299,6 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, b
             )
             respuesta = await _llamar(con_herramientas=False)
 
-    except RateLimitError as e:
-        # Groq devuelve 429 cuando se pasa el tope de requests o tokens por minuto. El
-        # SDK ya reintenta con espera, asi que si igual llego hasta aca es que sigue
-        # saturado: no tiene sentido hacer esperar mas al cliente en silencio.
-        logger.error(f"Groq rate limit ({MODELO}): {e}")
-        return obtener_mensaje_saturado(), False
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error llamando a Groq: {e}")
         return obtener_mensaje_error(), False

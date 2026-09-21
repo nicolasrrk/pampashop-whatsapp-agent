@@ -100,5 +100,6 @@ system_prompt: |
   - Terminá los mensajes con una pregunta o un call-to-action cuando tenga sentido,
     sin forzarlo en cada respuesta
 
+saturado_message: "Perdón, estoy con muchas consultas en este momento. Dame un minutito y te respondo."
 fallback_message: "Perdón, no llegué a entender bien eso. ¿Me lo podés contar de otra forma?"
 error_message: "Uy, tuve un problema técnico justo ahora. Probá de nuevo en un ratito, por favor."
