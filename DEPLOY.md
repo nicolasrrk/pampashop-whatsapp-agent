@@ -40,6 +40,7 @@ NO subir el archivo `.env` al repo: esta en `.gitignore` a proposito.
     ESCALACION_WHATSAPP_NUMERO=...
     DATABASE_URL=sqlite+aiosqlite:////app/data/agentkit.db
     ENVIRONMENT=production
+    PANEL_TOKEN=...             <- clave del panel web; sin esto /panel da 404
 
 NO setear `PORT`: lo inyecta Railway y el Dockerfile ya lo toma.
 
@@ -82,3 +83,20 @@ configurado pero no llega ningun mensaje.
 - Crear plantillas en espanol en Meta (hoy la unica aprobada es `hello_world`, en
   ingles). Solo hacen falta para ESCRIBIR primero; si el cliente escribe, la ventana
   de 24h deja responder libre.
+
+## 8. Panel de conversaciones
+
+`https://TU-DOMINIO/panel?token=EL_PANEL_TOKEN`
+
+Muestra los chats con el ultimo mensaje y, al entrar a uno, la conversacion completa
+entre el cliente y Pampa. Los que pidieron hablar con una persona aparecen primero,
+marcados. La lista se refresca sola cada 30 segundos.
+
+El token queda guardado en una cookie por 30 dias, asi que la primera vez se entra con
+`?token=...` y despues alcanza con `https://TU-DOMINIO/panel`. Guardalo en favoritos
+del celular.
+
+Es de SOLO LECTURA: no envia mensajes ni cambia nada.
+
+Si `PANEL_TOKEN` no esta configurado, `/panel` devuelve 404 a proposito: son
+conversaciones de clientes en una URL publica y no puede quedar abierto por olvido.

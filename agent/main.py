@@ -31,6 +31,7 @@ from agent.memory import (
     obtener_historial,
     registrar_contacto,
 )
+from agent.panel import router as panel_router
 from agent.providers import obtener_proveedor
 from agent.providers.base import MensajeEntrante
 
@@ -96,6 +97,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AgentKit — WhatsApp AI Agent", version="2.0.0", lifespan=lifespan)
+
+# Panel de solo lectura para mirar las conversaciones (agent/panel.py). Se monta
+# siempre: si PANEL_TOKEN no esta configurado, sus rutas devuelven 404 solas.
+app.include_router(panel_router)
 
 
 @app.get("/")

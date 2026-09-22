@@ -272,6 +272,35 @@ async def listar_leads(limite: int = 50) -> list[Lead]:
         return list(resultado.scalars().all())
 
 
+async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> list[dict]:
+    """
+    La conversacion entera para mostrarla en el panel, con fecha y hora.
+
+    Distinta de obtener_historial(), que es la que alimenta al modelo: esa recorta a
+    los ultimos mensajes, saca los "assistant" sueltos del principio porque la API lo
+    exige, y no devuelve timestamps. Para mirar un chat hace falta lo contrario:
+    todo lo que paso, tal cual paso, con la hora de cada mensaje.
+    """
+    async with async_session() as session:
+        resultado = await session.execute(
+            select(Mensaje)
+            .where(Mensaje.telefono == telefono)
+            .order_by(Mensaje.id.desc())
+            .limit(limite)
+        )
+        mensajes = list(resultado.scalars().all())
+
+    mensajes.reverse()
+    return [
+        {
+            "role": m.role,
+            "content": m.content,
+            "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+        }
+        for m in mensajes
+    ]
+
+
 # ── Modo borrador ──────────────────────────────────────────────────────────
 
 
