@@ -31,6 +31,7 @@ from agent.memory import (
     obtener_historial,
     registrar_contacto,
 )
+from agent.panel import PANEL_TOKEN as _PANEL_TOKEN
 from agent.panel import router as panel_router
 from agent.providers import obtener_proveedor
 from agent.providers.base import MensajeEntrante
@@ -38,6 +39,13 @@ from agent.providers.base import MensajeEntrante
 load_dotenv()
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+PANEL_TOKEN_CONFIGURADO = bool(_PANEL_TOKEN)
+
+# Railway expone el commit desplegado. Sirve para saber, con un curl a "/", si el
+# deploy tomo el ultimo push o quedo en una version vieja.
+_sha = os.getenv("RAILWAY_GIT_COMMIT_SHA") or ""
+VERSION_DESPLEGADA = _sha[:7] if _sha else "local"
 
 # El default es "borrador", igual que whatsapp-closer-agentkit: el agente redacta,
 # muestra y espera aprobacion antes de que le llegue algo al cliente. Solo pasa a
@@ -116,6 +124,13 @@ async def health_check():
         "service": "agentkit",
         "proveedor": proveedor.__class__.__name__ if proveedor else None,
         "conexion": estado_proveedor,
+        "modo_envio": MODO_ENVIO,
+        # Estos tres son para diagnosticar a distancia. Sin ellos, un /panel que
+        # devuelve 404 puede ser "falta la variable" o "el deploy quedo viejo", y
+        # desde afuera se ven identicos: 404 es tambien lo que responde FastAPI para
+        # una ruta que no existe.
+        "panel": "activo" if PANEL_TOKEN_CONFIGURADO else "sin PANEL_TOKEN",
+        "version": VERSION_DESPLEGADA,
     }
 
 
