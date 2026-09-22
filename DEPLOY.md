@@ -96,7 +96,19 @@ El token queda guardado en una cookie por 30 dias, asi que la primera vez se ent
 `?token=...` y despues alcanza con `https://TU-DOMINIO/panel`. Guardalo en favoritos
 del celular.
 
-Es de SOLO LECTURA: no envia mensajes ni cambia nada.
+Dos pestanas:
+
+- **CHATS** — los contactos con su ultimo mensaje. Al entrar a uno, la conversacion
+  completa. Los que pidieron hablar con una persona aparecen primero y marcados.
+- **POR APROBAR** — los borradores pendientes (solo con MODO_ENVIO=borrador). Se puede
+  editar el texto antes de enviarlo. "Enviar" manda el WhatsApp de verdad y pide
+  confirmacion; reemplaza a scripts/bandeja.py.
+
+Se actualiza solo cada 4 segundos. Si estas leyendo un chat y llega un mensaje nuevo,
+aparece sin recargar. No repinta si no cambio nada, asi que no pierde el scroll ni lo
+que estes escribiendo en un borrador.
 
 Si `PANEL_TOKEN` no esta configurado, `/panel` devuelve 404 a proposito: son
 conversaciones de clientes en una URL publica y no puede quedar abierto por olvido.
+Para saber si quedo activo, mirar el health check: `curl https://TU-DOMINIO/` devuelve
+`"panel": "activo"` o `"panel": "sin PANEL_TOKEN"`, y el commit que esta corriendo.
