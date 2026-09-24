@@ -70,7 +70,14 @@ async def avisar_canal_interno(telefono: str, mensaje_cliente: str, motivo: str)
 
         try:
             proveedor = obtener_proveedor()
-            enviado = await proveedor.enviar_mensaje(numero_interno, texto)
+            # Texto libre, no plantilla: el numero interno (el WhatsApp del local) NUNCA
+            # le escribe al numero del bot, asi que la ventana de 24hs de WhatsApp nunca
+            # se abre para el. Un mensaje de texto libre en ese caso Meta lo acepta
+            # (200 OK) pero no lo entrega, en silencio. Confirmado a mano: probamos
+            # mandar texto libre y no llego nada; con la plantilla "escalacion_aviso" si.
+            enviado = await proveedor.enviar_plantilla(
+                numero_interno, "escalacion_aviso", "es_AR", [telefono, motivo, mensaje_cliente]
+            )
             if not enviado:
                 logger.error("El proveedor no pudo mandar el aviso de escalacion al WhatsApp interno")
         except Exception as e:  # noqa: BLE001 — un aviso que falla no debe tumbar el manejo del mensaje

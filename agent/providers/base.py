@@ -6,10 +6,13 @@ Define la interfaz comun que todos los proveedores de WhatsApp implementan.
 Gracias a esto, main.py no sabe ni le importa con cual estas conectado.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from fastapi import Request
+
+logger = logging.getLogger("agentkit")
 
 
 @dataclass
@@ -41,6 +44,27 @@ class ProveedorWhatsApp(ABC):
     ) -> bool:
         """Envia un mensaje de texto. Retorna True si salio bien."""
         ...
+
+    async def enviar_plantilla(
+        self, telefono: str, nombre: str, idioma: str, parametros: list[str]
+    ) -> bool:
+        """
+        Envia un mensaje de plantilla (template) aprobada por Meta.
+
+        A diferencia de enviar_mensaje() (texto libre), una plantilla SI puede abrir
+        una conversacion sin que el destinatario le haya escrito antes al bot en las
+        ultimas 24 horas. Hace falta para avisos que el bot inicia por su cuenta, como
+        la escalacion a un humano: el celular del local nunca le escribe al numero del
+        bot, asi que la ventana de 24hs nunca se abre y el texto libre se pierde en
+        silencio (Meta responde 200 igual, pero no entrega nada).
+
+        Por defecto no soportado: cada proveedor que lo implemente lo sobreescribe.
+        """
+        logger.warning(
+            f"{self.__class__.__name__} no implementa el envio de plantillas: "
+            f"no se pudo mandar '{nombre}' a {telefono}"
+        )
+        return False
 
     async def verificar_firma(self, request: Request) -> bool:
         """

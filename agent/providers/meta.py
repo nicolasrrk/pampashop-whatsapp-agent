@@ -255,6 +255,56 @@ class ProveedorMeta(ProveedorWhatsApp):
         logger.error(f"Meta rechazo el envio [{r.status_code}]: {r.text[:500]}")
         return False
 
+    async def enviar_plantilla(
+        self, telefono: str, nombre: str, idioma: str, parametros: list[str]
+    ) -> bool:
+        """
+        Envia una plantilla (template) aprobada por Meta. A diferencia de un mensaje
+        de texto libre, esto SI abre conversacion aunque el destinatario nunca le haya
+        escrito al bot: por eso lo usa la escalacion, para el aviso al numero interno.
+        """
+        if not self.access_token or not self.phone_number_id:
+            logger.error("No se puede enviar: faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID")
+            return False
+
+        url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+        cuerpo = {
+            "messaging_product": "whatsapp",
+            "to": _numero_para_enviar(telefono),
+            "type": "template",
+            "template": {
+                "name": nombre,
+                "language": {"code": idioma},
+                "components": (
+                    [{"type": "body", "parameters": [{"type": "text", "text": p} for p in parametros]}]
+                    if parametros
+                    else []
+                ),
+            },
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as cliente:
+                r = await cliente.post(
+                    url,
+                    json=cuerpo,
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+        except httpx.HTTPError as e:
+            logger.error(f"Error de red hablando con Meta: {e}")
+            return False
+
+        if r.status_code == 200:
+            return True
+
+        # El motivo mas comun de error aca es que la plantilla todavia esta en
+        # revision (PENDING) o fue rechazada: Meta lo dice en el mensaje.
+        logger.error(f"Meta rechazo el envio de la plantilla '{nombre}' [{r.status_code}]: {r.text[:500]}")
+        return False
+
     # ── Diagnostico ──────────────────────────────────────────────────────
 
     async def verificar_conexion(self) -> tuple[bool, str]:
