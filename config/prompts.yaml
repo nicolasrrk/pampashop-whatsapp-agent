@@ -102,4 +102,5 @@ system_prompt: |
 
 saturado_message: "Perdón, estoy con muchas consultas en este momento. Dame un minutito y te respondo."
 fallback_message: "Perdón, no llegué a entender bien eso. ¿Me lo podés contar de otra forma?"
+adjunto_no_soportado_message: "Perdón, no pude leer {tipo}. ¿Me contás con palabras qué necesitás? Así te sigo ayudando."
 error_message: "Uy, tuve un problema técnico justo ahora. Probá de nuevo en un ratito, por favor."

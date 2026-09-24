@@ -1,13 +1,19 @@
-# agent/brain.py — Cerebro del agente: conexion con Groq
+# agent/brain.py — Cerebro del agente: conexion con Claude (Anthropic)
 # Generado por AgentKit
 
 """
 Logica de IA del agente. Lee el system prompt de config/prompts.yaml y genera las
-respuestas con la API de Groq (compatible con el formato de OpenAI).
+respuestas con la API de Anthropic (Claude).
 
 PAMPA SHOP pidio que el agente consulte stock, precio y datos de producto REALES desde
 Tienda Nube en vez de tener esa info fija en el prompt. Por eso este archivo implementa
-el ciclo de tool/function calling, llamando a las funciones de agent/tools.py.
+el ciclo de tool use, llamando a las funciones de agent/tools.py.
+
+Migrado de Groq (openai/gpt-oss-120b) a Claude el 2026-09-24. Motivos: el rate limit de
+Groq (8.000 tokens/min en el plan gratis) alcanzaba para un solo cliente por minuto, y
+el modelo se saltaba reglas explicitas del prompt (inventaba plazos de cambio, prometia
+reservas) pese a tener contraejemplos. Claude ademas ve imagenes de forma nativa, asi
+que resuelve de paso el problema de las fotos que el cliente manda por WhatsApp.
 """
 
 import json
@@ -15,115 +21,111 @@ import logging
 import os
 import re
 
+import anthropic
 import yaml
 from dotenv import load_dotenv
-from groq import AsyncGroq, RateLimitError
 
 from agent.tools import buscar_productos_tienda_nube, consultar_pedido, obtener_detalle_producto
 
 load_dotenv()
 logger = logging.getLogger("agentkit")
 
-client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # El modelo se cambia desde .env, sin tocar el codigo.
-#   openai/gpt-oss-120b   el mas capaz, mejor para razonar con el catalogo real (default)
-#   openai/gpt-oss-20b    mas rapido y liviano
+#   claude-opus-5     el mas capaz, para casos que necesiten razonar mucho
+#   claude-sonnet-5   el balanceado (default) — el elegido para este bot
+#   claude-haiku-4-5  el mas barato y rapido
 # El "or" y no el default de os.getenv: una variable declarada vacia en el .env
 # devuelve "" y dejaria al agente sin modelo.
-MODELO = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+MODELO = os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-5"
+
+# Esfuerzo de razonamiento: low | medium | high | xhigh | max. Un bot de WhatsApp que
+# contesta preguntas de horarios, stock y precio no necesita pensar mucho: "low" da
+# respuestas mas rapidas y mas baratas sin perder calidad para este tipo de consulta.
+# Vacio (no default) para no mandar el parametro y dejar el default del modelo.
+ESFUERZO = (os.getenv("ANTHROPIC_EFFORT") or "low").strip()
 
 # WhatsApp son mensajes cortos, pero este tope NO es solo la respuesta: el razonamiento
 # interno del modelo tambien cuenta contra el. Con el margen justo, una pregunta que
 # exija pensar un poco deja al agente sin espacio para contestar.
-MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS") or "4096")
+MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS") or "4096")
 
 # Tope de idas y vueltas de herramientas por mensaje del cliente. Sin este limite, un
 # encadenamiento raro de tool use podria quedar dando vueltas y disparar el costo y la
 # latencia de un solo mensaje de WhatsApp.
-# Estaba en 5 y se quedaba corto: un mensaje con dos intenciones ("tenes moleca 39? y
-# hacen envio a Fontana?") gasta varias busquedas mas un obtener_detalle_producto por
-# cada modelo candidato, y llegaba al tope sin contestar nunca.
-MAX_PASOS_HERRAMIENTAS = int(os.getenv("GROQ_MAX_PASOS_HERRAMIENTAS") or "10")
+MAX_PASOS_HERRAMIENTAS = int(os.getenv("ANTHROPIC_MAX_PASOS_HERRAMIENTAS") or "10")
 
 # ── Herramientas disponibles para el modelo ─────────────────────────────────
-# Formato de function calling estilo OpenAI (el que usa la API de Groq). Los nombres y
+# Formato nativo de Claude: "input_schema" en vez del "parameters" envuelto en
+# "function" que usa el formato estilo OpenAI (el que usaba Groq). Los nombres y
 # descripciones son los que el modelo lee para decidir CUANDO usarlas: cuanto mas clara
 # la descripcion, menos se equivoca.
 TOOLS = [
     {
-        "type": "function",
-        "function": {
-            "name": "buscar_productos_tienda_nube",
-            "description": (
-                "Busca productos en el catalogo real de PAMPA SHOP por nombre, marca o "
-                "palabra clave (ej: 'sandalia vizzano negra', 'zapatilla nino'). Devuelve "
-                "una lista con id, nombre, marca, rango de precio y si tiene stock. "
-                "Usala SIEMPRE que el cliente pregunte por un producto especifico, antes "
-                "de dar cualquier dato de talle, precio o stock. "
-                "Buscá UNA sola vez por producto, con el termino mas simple que lo "
-                "identifique (la marca y el tipo de calzado alcanzan: 'zapatilla moleca'). "
-                "NO agregues el talle ni el color a la busqueda, porque el buscador "
-                "matchea por nombre y el talle no esta en el nombre: para saber si hay "
-                "un talle usá obtener_detalle_producto sobre el id que ya encontraste. "
-                "Si una busqueda no trae lo que esperabas, NO la repitas con variantes "
-                "parecidas: contestale al cliente con lo que encontraste."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "consulta": {
-                        "type": "string",
-                        "description": "Texto de busqueda: nombre del producto, marca y/o tipo de calzado.",
-                    }
-                },
-                "required": ["consulta"],
+        "name": "buscar_productos_tienda_nube",
+        "description": (
+            "Busca productos en el catalogo real de PAMPA SHOP por nombre, marca o "
+            "palabra clave (ej: 'sandalia vizzano negra', 'zapatilla nino'). Devuelve "
+            "una lista con id, nombre, marca, rango de precio y si tiene stock. "
+            "Usala SIEMPRE que el cliente pregunte por un producto especifico, antes "
+            "de dar cualquier dato de talle, precio o stock. "
+            "Buscá UNA sola vez por producto, con el termino mas simple que lo "
+            "identifique (la marca y el tipo de calzado alcanzan: 'zapatilla moleca'). "
+            "NO agregues el talle ni el color a la busqueda, porque el buscador "
+            "matchea por nombre y el talle no esta en el nombre: para saber si hay "
+            "un talle usá obtener_detalle_producto sobre el id que ya encontraste. "
+            "Si una busqueda no trae lo que esperabas, NO la repitas con variantes "
+            "parecidas: contestale al cliente con lo que encontraste."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "consulta": {
+                    "type": "string",
+                    "description": "Texto de busqueda: nombre del producto, marca y/o tipo de calzado.",
+                }
             },
+            "required": ["consulta"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "obtener_detalle_producto",
-            "description": (
-                "Trae el detalle completo de UN producto puntual de Tienda Nube: "
-                "descripcion (incluye altura de taco, altura de base y peso cuando el "
-                "producto los tiene cargados) y cada variante con talle, color, precio, "
-                "precio promocional y stock exacto. Usala despues de "
-                "buscar_productos_tienda_nube, con el id del producto que interesa."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "product_id": {
-                        "type": "string",
-                        "description": "Id numerico del producto, obtenido de buscar_productos_tienda_nube.",
-                    }
-                },
-                "required": ["product_id"],
+        "name": "obtener_detalle_producto",
+        "description": (
+            "Trae el detalle completo de UN producto puntual de Tienda Nube: "
+            "descripcion (incluye altura de taco, altura de base y peso cuando el "
+            "producto los tiene cargados) y cada variante con talle, color, precio, "
+            "precio promocional y stock exacto. Usala despues de "
+            "buscar_productos_tienda_nube, con el id del producto que interesa."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product_id": {
+                    "type": "string",
+                    "description": "Id numerico del producto, obtenido de buscar_productos_tienda_nube.",
+                }
             },
+            "required": ["product_id"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "consultar_pedido",
-            "description": (
-                "Busca un pedido ya realizado por su numero (el que ve el cliente, no un "
-                "id interno) y devuelve su estado de pago y de envio. Usala cuando el "
-                "cliente pregunte por el estado de una compra y te haya dado el numero de "
-                "pedido."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "numero_pedido": {
-                        "type": "string",
-                        "description": "Numero de pedido que el cliente puede ver en su comprobante o email de confirmacion.",
-                    }
-                },
-                "required": ["numero_pedido"],
+        "name": "consultar_pedido",
+        "description": (
+            "Busca un pedido ya realizado por su numero (el que ve el cliente, no un "
+            "id interno) y devuelve su estado de pago y de envio. Usala cuando el "
+            "cliente pregunte por el estado de una compra y te haya dado el numero de "
+            "pedido."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numero_pedido": {
+                    "type": "string",
+                    "description": "Numero de pedido que el cliente puede ver en su comprobante o email de confirmacion.",
+                }
             },
+            "required": ["numero_pedido"],
         },
     },
 ]
@@ -163,7 +165,7 @@ def obtener_mensaje_error() -> str:
 
 def obtener_mensaje_saturado() -> str:
     """
-    Aviso para cuando Groq esta saturado (429). Se distingue del error generico a
+    Aviso para cuando Claude esta saturado (429). Se distingue del error generico a
     proposito: el cliente tiene que entender que su mensaje llego y que vale la pena
     esperar, no que algo se rompio.
     """
@@ -179,6 +181,30 @@ def obtener_mensaje_fallback() -> str:
     return cargar_config_prompts().get(
         "fallback_message", "Disculpa, no entendi tu mensaje. Podrias reformularlo?"
     )
+
+
+def obtener_mensaje_tipo_no_soportado(tipo: str) -> str:
+    """
+    Aviso para cuando el cliente manda algo que el agente todavia no puede leer:
+    audio, video, documento, sticker, ubicacion, o una imagen que no se pudo descargar.
+
+    Antes esos mensajes se descartaban en silencio (ver providers/meta.py) y el
+    cliente se quedaba sin ninguna respuesta, ni siquiera un error: quedaba en
+    "visto" sin saber que paso. Este mensaje reemplaza ese silencio.
+    """
+    nombres = {
+        "image": "esa foto",
+        "video": "videos",
+        "audio": "audios",
+        "document": "documentos",
+        "sticker": "stickers",
+        "location": "ubicaciones",
+    }
+    plantilla = cargar_config_prompts().get(
+        "adjunto_no_soportado_message",
+        "Perdón, no pude leer {tipo}. ¿Me contás con palabras qué necesitás? Así te ayudo igual.",
+    )
+    return plantilla.format(tipo=nombres.get(tipo, "ese tipo de archivo"))
 
 
 def _limpiar_formato_whatsapp(texto: str) -> str:
@@ -204,16 +230,27 @@ def _limpiar_formato_whatsapp(texto: str) -> str:
     return texto.strip()
 
 
+def _extraer_texto(respuesta) -> str:
+    """
+    Junta el texto de la respuesta de Claude.
+
+    Ojo: NO se puede hacer respuesta.content[0].text. La respuesta es una lista de
+    bloques y el primero no siempre es texto (puede haber bloques de tool_use o de
+    pensamiento antes). Hay que filtrar por tipo.
+    """
+    partes = [bloque.text for bloque in respuesta.content if bloque.type == "text"]
+    return "\n".join(p for p in partes if p).strip()
+
+
 async def _ejecutar_herramienta(nombre: str, entrada: dict, cache: dict | None = None) -> str:
     """
     Ejecuta una herramienta pedida por el modelo y devuelve el resultado como texto.
 
     "cache" vive lo que dura UN mensaje del cliente y guarda lo que ya se consulto.
     El modelo tiende a repetir la misma busqueda con variantes ("moleca", "zapatilla
-    moleca", "zapatilla Moleca 38"): cada repeticion es un turno mas contra Groq, que
-    suma latencia, gasta el tope de pasos y ayuda a llegar al rate limit. Si la llamada
-    es identica a una anterior se devuelve lo guardado, sin pegarle de nuevo a Tienda
-    Nube ni gastar el turno.
+    moleca", "zapatilla Moleca 38"): cada repeticion es un turno mas contra la API, que
+    suma latencia y costo. Si la llamada es identica a una anterior se devuelve lo
+    guardado, sin pegarle de nuevo a Tienda Nube ni gastar el turno.
     """
     clave = (nombre, json.dumps(entrada, sort_keys=True))
     if cache is not None and clave in cache:
@@ -237,126 +274,135 @@ async def _ejecutar_herramienta(nombre: str, entrada: dict, cache: dict | None =
     return resultado
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, bool]:
+async def generar_respuesta(
+    mensaje: str,
+    historial: list[dict],
+    imagen: dict | None = None,
+) -> tuple[str, bool]:
     """
-    Genera una respuesta con Groq, usando herramientas de Tienda Nube si hace falta.
+    Genera una respuesta con Claude, usando herramientas de Tienda Nube si hace falta.
 
     Args:
-        mensaje: el mensaje nuevo del cliente
+        mensaje: el mensaje nuevo del cliente (puede venir vacio si solo mando una foto)
         historial: los mensajes anteriores, [{"role": "user"|"assistant", "content": "..."}]
+        imagen: opcional, {"media_type": "image/jpeg", "data": "<base64 sin prefijo>"}.
+            Claude ve imagenes de forma nativa: no hace falta describirla aparte, se
+            manda junto con el texto en el mismo mensaje del usuario.
 
     Returns:
         (texto, es_respuesta_real)
 
         "es_respuesta_real" es False cuando lo que se devuelve es un aviso tecnico
-        (error o fallback) y no una respuesta del agente. main.py lo usa para no
-        guardar esos avisos en el historial: si se guardaran, quedarian contaminando
-        el contexto de todos los mensajes siguientes.
+        (error, saturacion o fallback) y no una respuesta del agente. main.py lo usa
+        para no guardar esos avisos en el historial: si se guardaran, quedarian
+        contaminando el contexto de todos los mensajes siguientes.
     """
-    if not mensaje or len(mensaje.strip()) < 2:
+    if not imagen and (not mensaje or len(mensaje.strip()) < 2):
         return obtener_mensaje_fallback(), False
 
     system_prompt = cargar_system_prompt()
-    mensajes = [{"role": "system", "content": system_prompt}]
-    mensajes.extend({"role": m["role"], "content": m["content"]} for m in historial)
-    mensajes.append({"role": "user", "content": mensaje})
+    mensajes: list[dict] = [{"role": m["role"], "content": m["content"]} for m in historial]
+
+    contenido_usuario: list[dict] = []
+    if imagen:
+        contenido_usuario.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": imagen["media_type"],
+                    "data": imagen["data"],
+                },
+            }
+        )
+    contenido_usuario.append(
+        {"type": "text", "text": mensaje or "(el cliente mando esta imagen sin ningun texto)"}
+    )
+    mensajes.append({"role": "user", "content": contenido_usuario})
 
     async def _llamar(con_herramientas: bool = True):
-        extra = (
-            {"tools": TOOLS, "tool_choice": "auto"}
-            if con_herramientas
-            else {}  # sin herramientas: el modelo no puede pedir mas y tiene que redactar
-        )
-        return await client.chat.completions.create(
+        extra = {"tools": TOOLS} if con_herramientas else {}
+        return await client.messages.create(
             model=MODELO,
             max_tokens=MAX_TOKENS,
+            # El system prompt es grande y se repite en cada llamada de este mismo
+            # mensaje (una por cada paso de herramientas) y de cada mensaje siguiente
+            # del mismo cliente. Cachearlo hace que esas repeticiones salgan ~90% mas
+            # baratas y no cuenten contra el limite de tokens por minuto.
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=mensajes,
+            output_config={"effort": ESFUERZO} if ESFUERZO else {},
             **extra,
-            # Sin esto, con tool use activo el modelo puede devolver su razonamiento
-            # interno mezclado en el mismo texto de la respuesta (tags <think>), y el
-            # cliente terminaria leyendo eso por WhatsApp. "parsed" lo separa aparte.
-            reasoning_format="parsed",
         )
 
     pasos = 0
-    cache_herramientas: dict = {}  # dura solo este mensaje; ver _ejecutar_herramienta
+    cache_herramientas: dict = {}
     try:
         respuesta = await _llamar()
 
-        # ── Ciclo de tool/function calling ──────────────────────────────
+        # ── Ciclo de tool use ────────────────────────────────────────────
         # Mientras el modelo pida herramientas, las ejecutamos y le devolvemos el
         # resultado, hasta que conteste con texto o se llegue al tope de pasos.
-        while respuesta.choices[0].finish_reason == "tool_calls" and pasos < MAX_PASOS_HERRAMIENTAS:
+        while respuesta.stop_reason == "tool_use" and pasos < MAX_PASOS_HERRAMIENTAS:
             pasos += 1
-            mensaje_modelo = respuesta.choices[0].message
-            mensajes.append(
-                {
-                    "role": "assistant",
-                    "content": mensaje_modelo.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                        }
-                        for tc in (mensaje_modelo.tool_calls or [])
-                    ],
-                }
-            )
+            mensajes.append({"role": "assistant", "content": respuesta.content})
 
-            for tc in mensaje_modelo.tool_calls or []:
-                try:
-                    entrada = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    entrada = {}
-                logger.info(f"El modelo pidio la herramienta {tc.function.name} con {entrada}")
-                resultado = await _ejecutar_herramienta(tc.function.name, entrada, cache_herramientas)
-                mensajes.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": resultado}
-                )
+            tool_use_blocks = [b for b in respuesta.content if b.type == "tool_use"]
+            resultados = []
+            for tc in tool_use_blocks:
+                logger.info(f"El modelo pidio la herramienta {tc.name} con {tc.input}")
+                # tc.input ya llega como dict: a diferencia del formato estilo OpenAI,
+                # Claude no manda los argumentos como un string JSON para parsear.
+                resultado = await _ejecutar_herramienta(tc.name, tc.input, cache_herramientas)
+                resultados.append({"type": "tool_result", "tool_use_id": tc.id, "content": resultado})
+            mensajes.append({"role": "user", "content": resultados})
 
             respuesta = await _llamar()
 
-        if respuesta.choices[0].finish_reason == "tool_calls":
+        if respuesta.stop_reason == "tool_use":
             # Se agotaron los pasos y el modelo seguia pidiendo herramientas. Antes esto
             # caia en el fallback ("no llegue a entender bien eso") y el cliente perdia
-            # todo lo que ya se habia averiguado. En vez de eso se pide una ultima
-            # respuesta SIN herramientas: ya no puede pedir mas y tiene que redactar con
-            # lo que junto hasta aca, que suele alcanzar de sobra.
+            # todo lo que ya se habia averiguado. En vez de eso se responden los tool_use
+            # pendientes con un aviso y se pide una ultima respuesta SIN herramientas:
+            # ya no puede pedir mas y tiene que redactar con lo que junto hasta aca.
             logger.warning(
                 f"Se llego al tope de {MAX_PASOS_HERRAMIENTAS} pasos de herramientas: "
                 "se pide el cierre sin herramientas"
             )
-            mensajes.append(
+            mensajes.append({"role": "assistant", "content": respuesta.content})
+            tool_use_blocks = [b for b in respuesta.content if b.type == "tool_use"]
+            resultados = [
                 {
-                    "role": "system",
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
                     "content": (
-                        "No podes pedir mas herramientas. Contestale al cliente ahora con "
-                        "la informacion que ya tenes. Si algo quedo sin averiguar, decilo "
-                        "con naturalidad y ofrece averiguarlo, pero nunca lo inventes."
+                        "No podes pedir mas herramientas. Contestale al cliente ahora "
+                        "con la informacion que ya tenes. Si algo quedo sin averiguar, "
+                        "decilo con naturalidad y ofrece averiguarlo, pero nunca lo inventes."
                     ),
                 }
-            )
+                for tc in tool_use_blocks
+            ]
+            mensajes.append({"role": "user", "content": resultados})
             respuesta = await _llamar(con_herramientas=False)
 
-    except RateLimitError as e:
-        # Groq devuelve 429 cuando se pasa el tope de requests o tokens por minuto. El
-        # SDK ya reintenta con espera, asi que si igual llego hasta aca es que sigue
-        # saturado: no tiene sentido hacer esperar mas al cliente en silencio.
-        logger.error(f"Groq rate limit ({MODELO}): {e}")
+    except anthropic.RateLimitError as e:
+        # Un 429 significa que la cuenta se paso del limite de requests o tokens por
+        # minuto. El SDK ya reintenta con espera, asi que si igual llego hasta aca es
+        # que sigue saturado: no tiene sentido hacer esperar mas al cliente en silencio.
+        logger.error(f"Rate limit de Anthropic ({MODELO}): {e}")
         return obtener_mensaje_saturado(), False
     except Exception as e:  # noqa: BLE001
-        logger.error(f"Error llamando a Groq: {e}")
+        logger.error(f"Error llamando a Claude: {e}")
         return obtener_mensaje_error(), False
 
-    eleccion = respuesta.choices[0]
-    if eleccion.finish_reason == "length":
+    if respuesta.stop_reason == "max_tokens":
         logger.warning(
             f"La respuesta se corto por llegar al tope de {MAX_TOKENS} tokens. "
-            "Si pasa seguido, sube GROQ_MAX_TOKENS o acorta el system prompt."
+            "Si pasa seguido, sube ANTHROPIC_MAX_TOKENS o acorta el system prompt."
         )
 
-    texto = _limpiar_formato_whatsapp(eleccion.message.content or "")
+    texto = _limpiar_formato_whatsapp(_extraer_texto(respuesta))
     if not texto:
         logger.warning("El modelo devolvio una respuesta sin texto")
         return obtener_mensaje_fallback(), False
@@ -364,6 +410,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, b
     uso = respuesta.usage
     logger.info(
         f"Respuesta generada con {MODELO} "
-        f"({uso.prompt_tokens} in / {uso.completion_tokens} out, {pasos} pasos de herramientas)"
+        f"({uso.input_tokens} in / {uso.output_tokens} out, "
+        f"{getattr(uso, 'cache_read_input_tokens', 0)} de cache, {pasos} pasos de herramientas)"
     )
     return texto, True

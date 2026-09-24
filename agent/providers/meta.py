@@ -6,6 +6,7 @@ Conexion directa contra la API oficial de Meta.
 Documentacion: https://developers.facebook.com/docs/whatsapp/cloud-api
 """
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -17,6 +18,19 @@ from fastapi import Request
 from agent.providers.base import MensajeEntrante, ProveedorWhatsApp
 
 logger = logging.getLogger("agentkit")
+
+# Tipos de mensaje que el agente todavia no puede leer (aparte de imagen, que ahora se
+# descarga y se le manda a Claude — ver _descargar_imagen). Antes se descartaban con un
+# simple "continue" en parsear_webhook: el cliente mandaba un audio y no le llegaba
+# absolutamente nada, ni un error, se quedaba en visto sin saber que paso. Ahora se
+# marcan con "tipo_no_soportado" para que main.py le mande un aviso claro.
+_TIPOS_SIN_SOPORTE = {
+    "video": "videos",
+    "audio": "audios",
+    "document": "documentos",
+    "sticker": "stickers",
+    "location": "ubicaciones",
+}
 
 
 def _numero_para_enviar(telefono: str) -> str:
@@ -98,6 +112,45 @@ class ProveedorMeta(ProveedorWhatsApp):
             return False
         return True
 
+    async def _descargar_imagen(self, media_id: str) -> dict | None:
+        """
+        Baja una imagen que el cliente mando por WhatsApp y la deja lista para Claude.
+
+        Meta no entrega la imagen en el webhook, solo un media_id: hay que pedirle la
+        URL temporal de descarga y despues bajar el archivo, los dos pasos con el
+        mismo token de acceso. Devuelve None si algo falla (imagen vieja, tipo raro,
+        error de red) para que el llamador pueda avisarle al cliente en vez de
+        colgarse.
+        """
+        if not self.access_token:
+            return None
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as cliente:
+                r = await cliente.get(
+                    f"https://graph.facebook.com/{self.api_version}/{media_id}",
+                    headers=headers,
+                )
+                if r.status_code != 200:
+                    logger.error(f"No se pudo obtener la URL de la imagen [{r.status_code}]: {r.text[:300]}")
+                    return None
+                datos = r.json()
+                url = datos.get("url")
+                mime_type = datos.get("mime_type", "image/jpeg")
+                if not url:
+                    return None
+
+                r2 = await cliente.get(url, headers=headers)
+                if r2.status_code != 200:
+                    logger.error(f"No se pudo descargar la imagen [{r2.status_code}]")
+                    return None
+        except httpx.HTTPError as e:
+            logger.error(f"Error de red descargando una imagen de WhatsApp: {e}")
+            return None
+
+        return {"media_type": mime_type, "data": base64.standard_b64encode(r2.content).decode("ascii")}
+
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
         """Recorre el payload anidado de Meta Cloud API."""
         body = await request.json()
@@ -107,18 +160,62 @@ class ProveedorMeta(ProveedorWhatsApp):
             for change in entry.get("changes", []):
                 value = change.get("value") or {}
                 for msg in value.get("messages", []):
-                    if msg.get("type") != "text":
-                        continue  # por ahora solo texto
-                    mensajes.append(
-                        MensajeEntrante(
-                            telefono=msg.get("from", ""),
-                            texto=(msg.get("text") or {}).get("body", ""),
-                            mensaje_id=msg.get("id", ""),
-                            # Meta solo entrega mensajes entrantes por este canal
-                            es_propio=False,
-                            contexto={"evento_id": msg.get("id", "")},
+                    tipo = msg.get("type")
+
+                    if tipo == "text":
+                        mensajes.append(
+                            MensajeEntrante(
+                                telefono=msg.get("from", ""),
+                                texto=(msg.get("text") or {}).get("body", ""),
+                                mensaje_id=msg.get("id", ""),
+                                # Meta solo entrega mensajes entrantes por este canal
+                                es_propio=False,
+                                contexto={"evento_id": msg.get("id", "")},
+                            )
                         )
-                    )
+
+                    elif tipo == "image":
+                        # Se descarga aca, en el parseo del webhook, y no mas adelante
+                        # en brain.py: asi el resto del sistema no necesita saber nada
+                        # de la API de medios de Meta, solo recibe la imagen ya lista.
+                        bloque_imagen = msg.get("image") or {}
+                        imagen = await self._descargar_imagen(bloque_imagen.get("id", ""))
+                        contexto = {"evento_id": msg.get("id", "")}
+                        if imagen:
+                            contexto["imagen"] = imagen
+                        else:
+                            # No se pudo bajar la imagen: se marca como no soportada en
+                            # vez de perder el mensaje, para que el cliente reciba al
+                            # menos un aviso y no quede en visto sin explicacion.
+                            contexto["tipo_no_soportado"] = "image"
+                        mensajes.append(
+                            MensajeEntrante(
+                                telefono=msg.get("from", ""),
+                                texto=bloque_imagen.get("caption") or "[el cliente envio una foto]",
+                                mensaje_id=msg.get("id", ""),
+                                es_propio=False,
+                                contexto=contexto,
+                            )
+                        )
+
+                    elif tipo in _TIPOS_SIN_SOPORTE:
+                        mensajes.append(
+                            MensajeEntrante(
+                                telefono=msg.get("from", ""),
+                                # El texto no puede quedar vacio: main.py descarta en
+                                # silencio los mensajes sin texto (webhook_handler).
+                                texto=f"[el cliente envio {_TIPOS_SIN_SOPORTE[tipo]}]",
+                                mensaje_id=msg.get("id", ""),
+                                es_propio=False,
+                                contexto={
+                                    "evento_id": msg.get("id", ""),
+                                    "tipo_no_soportado": tipo,
+                                },
+                            )
+                        )
+                    # otros tipos (reacciones, contactos, interactivos, de sistema)
+                    # se siguen ignorando: no son mensajes que un cliente espere
+                    # que se le responda.
         return mensajes
 
     # ── Enviar ───────────────────────────────────────────────────────────

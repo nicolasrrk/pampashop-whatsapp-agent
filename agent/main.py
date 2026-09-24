@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
-from agent.brain import generar_respuesta, obtener_mensaje_error
+from agent.brain import generar_respuesta, obtener_mensaje_error, obtener_mensaje_tipo_no_soportado
 from agent.escalacion import avisar_canal_interno, detectar_palabra_clave, obtener_mensaje_escalacion
 from agent.memory import (
     crear_borrador,
@@ -222,10 +222,18 @@ async def procesar_mensaje(msg: MensajeEntrante):
                 await _escalar_a_humano(msg, evento_id, palabra)
                 return
 
-            # El historial se lee ANTES de guardar el mensaje actual: brain.py agrega
-            # el mensaje nuevo al final, y asi no queda duplicado.
-            historial = await obtener_historial(msg.telefono)
-            respuesta, es_respuesta_real = await generar_respuesta(msg.texto, historial)
+            # Audio, video, documentos, o una imagen que no se pudo descargar: no se
+            # llama al modelo, se responde directo con el aviso. Ver providers/meta.py.
+            tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
+            if tipo_no_soportado:
+                respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
+            else:
+                # El historial se lee ANTES de guardar el mensaje actual: brain.py
+                # agrega el mensaje nuevo al final, y asi no queda duplicado.
+                historial = await obtener_historial(msg.telefono)
+                respuesta, es_respuesta_real = await generar_respuesta(
+                    msg.texto, historial, imagen=msg.contexto.get("imagen")
+                )
 
             # Los avisos tecnicos (error/fallback) se mandan directo: frenarlos a
             # esperar aprobacion solo deja al cliente sin nada mas tiempo.
