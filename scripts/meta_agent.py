@@ -12,8 +12,9 @@ Los tokens se leen del .env y nunca se escriben en pantalla ni quedan en el hist
 de la terminal.
 
 Uso:
-    python scripts/meta_agent.py estado      ver como esta configurado todo
-    python scripts/meta_agent.py connector   crear el connector de Tienda Nube
+    python scripts/meta_agent.py estado          ver como esta configurado todo
+    python scripts/meta_agent.py connector       crear el connector de Tienda Nube
+    python scripts/meta_agent.py reautenticar    reintentar la credencial de un connector existente
 """
 
 import json
@@ -102,7 +103,10 @@ def connector():
         return
 
     cuerpo = {
-        "name": "Tienda Nube PAMPA SHOP",
+        # OJO: el campo "name" no acepta espacios ni guiones, aunque la documentacion
+        # no lo diga. Confirmado a mano: "Tienda Nube PAMPA SHOP" y "tienda-nube" dan
+        # los dos 400 "Invalid connector request"; "tiendanube" (una sola palabra) anda.
+        "name": "tiendanubepampashop",
         "description": (
             f"Catalogo en vivo de la tienda online de PAMPA SHOP (Tienda Nube, tienda {TN_STORE}). "
             "Permite buscar calzado por nombre, marca o tipo con GET /products?q=, y obtener la "
@@ -113,7 +117,10 @@ def connector():
             "datos que cambian todos los dias y el contenido crawleado del sitio puede estar viejo."
         ),
         "base_url": f"https://api.tiendanube.com/{TN_VERSION}/{TN_STORE}",
-        "connector_protocol": "HTTP",
+        # OJO: NO mandar "connector_protocol". La documentacion lo da como valido y
+        # como default ("HTTP" si se omite), pero mandarlo explicito hace que la API
+        # rechace el request entero con 400 "Invalid connector request". Confirmado
+        # a mano: el mismo body sin este campo se crea bien.
         "auth_type": "API_KEY",
         "auth_config": {
             "api_key": {
@@ -140,6 +147,80 @@ def connector():
         print(f"HTTP {codigo}: {json.dumps(datos, ensure_ascii=False)[:500]}")
 
 
+def connector_v2():
+    """
+    Igual que connector(), pero con el token y "Bearer " juntos en un solo campo
+    "value", sin "prefix" separado. Existe porque upsertApiKey (para actualizar el
+    connector original) da 500 y NO aplica el cambio; crear de cero si es confiable,
+    asi que se prueba la hipotesis con un connector nuevo en vez de arriesgar el que
+    ya funciona.
+    """
+    if not TN_TOKEN:
+        print("Falta TIENDANUBE_ACCESS_TOKEN en el .env")
+        return
+
+    cuerpo = {
+        "name": "tiendanubepampashopv2",
+        "description": "Prueba: token y Bearer combinados en un solo campo, sin prefix.",
+        "base_url": f"https://api.tiendanube.com/{TN_VERSION}/{TN_STORE}",
+        "auth_type": "API_KEY",
+        "auth_config": {
+            "api_key": {
+                "headers": [
+                    {"field_name": "Authorization", "value": f"Bearer {TN_TOKEN}"},
+                    {"field_name": "User-Agent",
+                     "value": "PampaShop Meta Business Agent (ventas@pampashop.com.ar)"},
+                ]
+            }
+        },
+    }
+    codigo, datos = _llamar("agent_connectors", metodo="POST", cuerpo=cuerpo)
+    if codigo in (200, 201):
+        print(f"Connector v2 creado: {datos['id']}")
+    elif codigo == 500 and isinstance(datos, dict) and datos.get("detail") == "An unexpected error occurred":
+        print("HTTP 500 generico: puede haberse creado igual. Correr 'estado' para confirmar.")
+    else:
+        print(f"HTTP {codigo}: {json.dumps(datos, ensure_ascii=False)[:400]}")
+
+
+def reautenticar():
+    """
+    Reintenta la credencial del connector "tiendanubepampashop" con el token y el
+    prefijo "Bearer " juntos en un solo campo "value", sin usar "prefix" por separado.
+
+    Motivo: crear una herramienta sobre el connector real da siempre
+    "Authorization failed", aunque el token funciona perfecto contra Tienda Nube
+    llamado directo (verificado con agent/tools.py) y el connector muestra el prefix
+    guardado bien en el GET. Sospecha: el validador que corre al crear una herramienta
+    arma la llamada de prueba distinto a como lo hace en produccion, y no concatena
+    "prefix" + "value" en ese paso. Juntarlo todo en "value" evita la duda.
+    """
+    if not TN_TOKEN:
+        print("Falta TIENDANUBE_ACCESS_TOKEN en el .env")
+        return
+
+    codigo, conectores = _llamar("agent_connectors")
+    objetivo = next((c for c in (conectores or []) if c["name"] == "tiendanubepampashop"), None)
+    if not objetivo:
+        print("No existe el connector 'tiendanubepampashop'. Corre primero 'connector'.")
+        return
+
+    cuerpo = {
+        "api_key_config": {
+            "headers": [
+                {"field_name": "Authorization", "value": f"Bearer {TN_TOKEN}"},
+                {"field_name": "User-Agent",
+                 "value": "PampaShop Meta Business Agent (ventas@pampashop.com.ar)"},
+            ]
+        }
+    }
+    codigo, datos = _llamar(f"agent_connectors/{objetivo['id']}/upsertApiKey", metodo="POST", cuerpo=cuerpo)
+    if codigo == 200:
+        print(f"Credencial actualizada. Estado: {datos['connection_status']['status']}")
+    else:
+        print(f"HTTP {codigo}: {json.dumps(datos, ensure_ascii=False)[:400]}")
+
+
 if __name__ == "__main__":
     if not META_TOKEN or not PHONE_ID:
         print("Faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID en el .env")
@@ -150,5 +231,9 @@ if __name__ == "__main__":
         estado()
     elif comando == "connector":
         connector()
+    elif comando == "connector-v2":
+        connector_v2()
+    elif comando == "reautenticar":
+        reautenticar()
     else:
         print(__doc__)
