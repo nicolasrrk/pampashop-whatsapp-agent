@@ -160,9 +160,11 @@ async def buscar_productos_tienda_nube(consulta: str) -> str:
         rango_precio = f"${min(precios):,.0f}".replace(",", ".") if precios else "sin precio"
         if precios and max(precios) != min(precios):
             rango_precio += f" a ${max(precios):,.0f}".replace(",", ".")
+        link = p.get("canonical_url") or ""
         lineas.append(
             f"- id={p['id']} | {nombre} ({marca}) | precio: {rango_precio} | "
             f"{'con stock' if hay_stock else 'sin stock'}"
+            + (f" | link: {link}" if link else "")
         )
 
     return "\n".join(lineas)
