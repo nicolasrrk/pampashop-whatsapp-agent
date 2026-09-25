@@ -18,12 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent.brain import generar_respuesta, obtener_mensaje_error, obtener_mensaje_tipo_no_soportado
-from agent.escalacion import (
-    avisar_canal_interno,
-    detectar_palabra_clave,
-    obtener_mensaje_escalacion,
-    obtener_mensaje_escalado_de_nuevo,
-)
+from agent.escalacion import avisar_canal_interno, detectar_palabra_clave, obtener_mensaje_escalacion
 from agent.memory import (
     crear_borrador,
     esta_escalado,
@@ -215,36 +210,40 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # scripts/leads.py muestre quien escribio sin tener que abrir WhatsApp.
             await registrar_contacto(msg.telefono, msg.texto)
 
-            # Si ya escalamos este numero antes, el agente ya no vuelve a INTENTAR
-            # RESOLVER nada (el motivo por el que se escalo sigue en pie, y no tiene
-            # sentido gastar una llamada a Claude para eso) — pero SI le contesta algo,
-            # para no dejarlo en silencio total. Antes se cortaba en seco: si el aviso
-            # interno nunca llegaba a destino (paso de verdad: ver el commit de este
-            # cambio), el cliente se quedaba sin ninguna respuesta, ni siquiera un
-            # "ya te estamos por contactar". Ese aviso es responsabilidad de una
-            # persona, no algo que el cliente tenga que sufrir en silencio.
-            if await esta_escalado(msg.telefono):
-                logger.info(f"{msg.telefono} ya esta escalado: se le manda un aviso corto")
-                respuesta, es_respuesta_real = obtener_mensaje_escalado_de_nuevo(), True
-            else:
+            # Escalar ya NO apaga al bot. Antes, apenas se marcaba una conversacion,
+            # el agente dejaba de contestar por completo (o, en el intento anterior de
+            # arreglar esto, contestaba solo un mensaje fijo de "ya te van a
+            # contactar"). El usuario lo pidio explicito: el bot SIEMPRE tiene que
+            # responder lo que se le pregunta, sin esquivar, este o no escalada la
+            # conversacion — escalar es un aviso para que una persona se sume, no un
+            # motivo para que Fran se calle.
+            #
+            # Lo unico que cambia con el estado "escalado" es que no se repite la
+            # ceremonia de la PRIMERA vez (el mensaje fijo de "te sigue una persona...",
+            # un aviso nuevo al local) cada vez que el cliente vuelve a mencionar una
+            # palabra de la lista: eso ya se hizo una vez, y repetirlo en cada mensaje
+            # seria justamente esquivar la pregunta real con el mismo texto fijo de
+            # siempre. Si en medio de la charla Fran nota que hace falta un humano de
+            # nuevo (otro motivo, otro pedido), puede volver a usar la herramienta
+            # escalar_a_humano las veces que haga falta: eso no se bloquea.
+            if not await esta_escalado(msg.telefono):
                 palabra = detectar_palabra_clave(msg.texto)
                 if palabra:
                     await _escalar_a_humano(msg, evento_id, palabra)
                     return
 
-                # Audio, video, documentos, o una imagen que no se pudo descargar: no
-                # se llama al modelo, se responde directo con el aviso. Ver
-                # providers/meta.py.
-                tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
-                if tipo_no_soportado:
-                    respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
-                else:
-                    # El historial se lee ANTES de guardar el mensaje actual: brain.py
-                    # agrega el mensaje nuevo al final, y asi no queda duplicado.
-                    historial = await obtener_historial(msg.telefono)
-                    respuesta, es_respuesta_real = await generar_respuesta(
-                        msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
-                    )
+            # Audio, video, documentos, o una imagen que no se pudo descargar: no se
+            # llama al modelo, se responde directo con el aviso. Ver providers/meta.py.
+            tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
+            if tipo_no_soportado:
+                respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
+            else:
+                # El historial se lee ANTES de guardar el mensaje actual: brain.py
+                # agrega el mensaje nuevo al final, y asi no queda duplicado.
+                historial = await obtener_historial(msg.telefono)
+                respuesta, es_respuesta_real = await generar_respuesta(
+                    msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
+                )
 
             # Los avisos tecnicos (error/fallback) se mandan directo: frenarlos a
             # esperar aprobacion solo deja al cliente sin nada mas tiempo.

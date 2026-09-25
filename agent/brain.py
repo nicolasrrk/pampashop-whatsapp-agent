@@ -132,15 +132,16 @@ TOOLS = [
     {
         "name": "escalar_a_humano",
         "description": (
-            "Deriva la conversacion a una persona del equipo AHORA. Usala cuando el "
-            "cliente pide algo que vos no podes resolver con certeza: una reserva, "
-            "bloquear stock, coordinar un retiro o un pago por fuera de la web, un "
-            "reclamo, o cualquier gestion puntual — inclusive si no usa ninguna "
-            "palabra especial, con que la intencion sea clara alcanza (\"quiero "
-            "hablar con una persona\", \"necesito que alguien me ayude con esto\", "
-            "etc.). Despues de llamar esta herramienta la conversacion queda cerrada "
-            "para vos: no va a haber otro turno tuyo en este mensaje, el cliente ya "
-            "recibe la respuesta de derivacion automaticamente. No la uses para "
+            "Avisa a una persona del equipo AHORA de que este cliente necesita ayuda "
+            "que vos no podes dar con certeza: una reserva, bloquear stock, "
+            "coordinar un retiro o un pago por fuera de la web, un reclamo, o "
+            "cualquier gestion puntual — inclusive si no usa ninguna palabra especial, "
+            "con que la intencion sea clara alcanza (\"quiero hablar con una "
+            "persona\", \"necesito que alguien me ayude con esto\", etc.). Esto NO "
+            "corta la conversacion ni te calla: seguis respondiendo con normalidad "
+            "todo lo demas que te pregunten, en este mensaje y en los que vengan "
+            "despues. Es solo un aviso interno, en paralelo — no le esquives al "
+            "cliente el resto de lo que te haya preguntado. No la uses para "
             "preguntas que si podes responder vos con las otras herramientas."
         ),
         "input_schema": {
@@ -392,14 +393,28 @@ async def generar_respuesta(
                 logger.info(f"El modelo pidio la herramienta {tc.name} con {tc.input}")
 
                 if tc.name == "escalar_a_humano":
-                    # Esta corta la conversacion ACA, no sigue el ciclo normal: no
-                    # tiene sentido que el modelo siga pidiendo cosas despues de
-                    # derivar. El texto que le llega al cliente es siempre el mensaje
-                    # fijo (obtener_mensaje_escalacion), nunca algo que Claude redacte
-                    # en el momento — ver escalar_desde_agente para el motivo.
+                    # A proposito NO corta la conversacion: avisa a una persona y
+                    # marca la conversacion (efectos reales, iguales a siempre), pero
+                    # el resultado vuelve como un tool_result mas, para que Claude
+                    # siga el mismo turno y conteste todo lo demas que le hayan
+                    # preguntado en el mismo mensaje. Cortar ahi seria exactamente
+                    # el "esquivar la pregunta" que no queremos: si alguien pide "che,
+                    # me reservas este par y de paso decime el precio del otro", tiene
+                    # que llevarse las dos cosas, no un mensaje fijo que ignora la
+                    # segunda pregunta.
                     motivo = tc.input.get("motivo", "")
-                    texto_fijo = await escalar_desde_agente(telefono, motivo, mensaje)
-                    return texto_fijo, True
+                    await escalar_desde_agente(telefono, motivo, mensaje)
+                    resultado = (
+                        "Listo, ya se avisó a una persona del equipo sobre esto — no "
+                        "hace falta llamar de nuevo a esta herramienta por el mismo "
+                        "motivo en este mensaje. Si el cliente preguntó otra cosa en "
+                        "el mismo mensaje que vos sí podés responder con las otras "
+                        "herramientas, respondésela con naturalidad en el mismo turno. "
+                        "Al mencionar que alguien lo va a contactar, no prometas un "
+                        "tiempo exacto ni des un número de teléfono."
+                    )
+                    resultados.append({"type": "tool_result", "tool_use_id": tc.id, "content": resultado})
+                    continue
 
                 # tc.input ya llega como dict: a diferencia del formato estilo OpenAI,
                 # Claude no manda los argumentos como un string JSON para parsear.
