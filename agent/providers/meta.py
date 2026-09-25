@@ -33,6 +33,18 @@ _TIPOS_SIN_SOPORTE = {
 }
 
 
+def _sanitizar_parametro_plantilla(texto: str) -> str:
+    """
+    Meta rechaza (#132018) cualquier parametro de plantilla que traiga saltos de
+    linea/tabs o mas de 4 espacios seguidos. Un mensaje de cliente escrito en varios
+    renglones (lo mas normal en WhatsApp) rompia el envio en silencio: enviar_plantilla
+    devolvia False, quedaba en el log, y el aviso interno nunca llegaba. Confirmado a
+    mano contra la API con un parametro multilinea.
+    """
+    plano = " ".join(texto.split())
+    return plano[:1024]
+
+
 def _numero_para_enviar(telefono: str) -> str:
     """
     Los celulares de Argentina llegan en los webhooks con un "9" extra despues del
@@ -321,7 +333,15 @@ class ProveedorMeta(ProveedorWhatsApp):
                 "name": nombre,
                 "language": {"code": idioma},
                 "components": (
-                    [{"type": "body", "parameters": [{"type": "text", "text": p} for p in parametros]}]
+                    [
+                        {
+                            "type": "body",
+                            "parameters": [
+                                {"type": "text", "text": _sanitizar_parametro_plantilla(p)}
+                                for p in parametros
+                            ],
+                        }
+                    ]
                     if parametros
                     else []
                 ),
