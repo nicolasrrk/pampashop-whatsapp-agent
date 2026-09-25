@@ -173,7 +173,7 @@ PAGINA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pampa</title>
+<title>Fran</title>
 <style>
   :root {
     --fondo:#f0f2f5; --panel:#fff; --borde:#e4e6eb; --texto:#111b21; --suave:#667781;
@@ -276,7 +276,7 @@ PAGINA = """<!doctype html>
 <header>
   <div class="barra">
     <button class="volver" id="volver" aria-label="Volver">&larr;</button>
-    <h1 id="titulo">Pampa</h1>
+    <h1 id="titulo">Fran</h1>
     <span class="vivo"><span class="punto" id="punto"></span><span id="contador"></span></span>
   </div>
   <nav id="nav">
@@ -410,7 +410,7 @@ volver.onclick = () => {
   vista = "chats"; telActual = null; ultimaFirma = "";
   volver.style.display = "none";
   nav.style.display = "flex";
-  titulo.textContent = "Pampa";
+  titulo.textContent = "Fran";
   refrescar();
 };
 
