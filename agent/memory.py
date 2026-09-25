@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Integer, String, Text, delete, select
+from sqlalchemy import DateTime, Integer, String, Text, delete, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -93,6 +93,13 @@ class Lead(Base):
     ultimo_mensaje: Mapped[str] = mapped_column(Text)
     veces_contactado: Mapped[int] = mapped_column(Integer, default=1)
     escalado: Mapped[bool] = mapped_column(default=False)
+    # Cuando se mando el ultimo aviso interno por este telefono (no cuando se marco
+    # escalado por primera vez: son la misma columna porque hoy se actualizan siempre
+    # juntas). Sirve para decidir si conviene volver a avisar — ver
+    # debe_reavisar_escalacion.
+    ultimo_aviso_escalado: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
@@ -118,10 +125,29 @@ class Borrador(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
+def _migrar_columnas_nuevas(conn):
+    """
+    create_all() solo crea tablas que faltan: NO agrega columnas nuevas a una tabla que
+    ya existia de un deploy anterior. Sin esto, agregar un campo a un modelo (como
+    "ultimo_aviso_escalado" en Lead) rompe en produccion con un error de "columna no
+    existe" en la primera consulta que la use, contra una base que ya tenia la tabla
+    "leads" de antes.
+    """
+    inspector = inspect(conn)
+    if "leads" not in inspector.get_table_names():
+        return  # tabla recien creada por create_all(): ya tiene todas las columnas
+    columnas = {c["name"] for c in inspector.get_columns("leads")}
+    if "ultimo_aviso_escalado" not in columnas:
+        tipo = "TIMESTAMP WITH TIME ZONE" if conn.dialect.name == "postgresql" else "TIMESTAMP"
+        conn.execute(text(f"ALTER TABLE leads ADD COLUMN ultimo_aviso_escalado {tipo}"))
+        logger.info("Migracion: agregada la columna leads.ultimo_aviso_escalado")
+
+
 async def inicializar_db():
-    """Crea las tablas si no existen."""
+    """Crea las tablas si no existen, y agrega columnas nuevas a tablas que ya estaban."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrar_columnas_nuevas)
 
 
 async def marcar_evento_procesado(evento_id: str) -> bool:
@@ -244,13 +270,47 @@ async def esta_escalado(telefono: str) -> bool:
 
 
 async def marcar_escalado(telefono: str):
-    """Marca el lead como escalado. Desde aca el agente deja de contestarle."""
+    """
+    Marca el lead como escalado y registra el momento del aviso.
+
+    El momento se guarda ACA, no en un lugar aparte, porque hoy los dos llamadores
+    (main.py y escalacion.py) llaman a esto siempre justo antes de mandar el aviso
+    interno: son, en la practica, el mismo evento. Ese timestamp es lo que despues usa
+    debe_reavisar_escalacion para decidir si ya paso suficiente tiempo como para
+    mandar el aviso de nuevo.
+    """
     async with async_session() as session:
         lead = await session.get(Lead, telefono)
         if lead is not None:
             lead.escalado = True
+            lead.ultimo_aviso_escalado = ahora()
             lead.actualizado_en = ahora()
             await session.commit()
+
+
+async def debe_reavisar_escalacion(telefono: str, cooldown: timedelta) -> bool:
+    """
+    True si corresponde mandar un aviso interno para este telefono: nunca se escalo
+    antes, o paso mas del "cooldown" desde el ultimo aviso.
+
+    Sin esto, cada mensaje que repite la misma palabra clave (o cada vez que el agente
+    vuelve a usar la herramienta escalar_a_humano) mandaria un aviso nuevo al local, lo
+    cual satura de notificaciones repetidas por la MISMA gestion. Pero si el cliente
+    insiste despues de un rato, es una señal real de que el primer aviso se paso por
+    alto, asi que conviene avisar de nuevo en vez de asumir que ya esta cubierto.
+    """
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is None or not lead.escalado or lead.ultimo_aviso_escalado is None:
+            return True
+        ultimo_aviso = lead.ultimo_aviso_escalado
+        # SQLite no guarda la zona horaria: lo que vuelve es "naive" aunque la columna
+        # sea DateTime(timezone=True) y lo que se guardo (ahora()) si la tuviera. Sin
+        # esto, restar contra un datetime "aware" tira TypeError. En Postgres esto no
+        # hace falta (ya vuelve con tzinfo), pero no molesta si ya la tiene.
+        if ultimo_aviso.tzinfo is None:
+            ultimo_aviso = ultimo_aviso.replace(tzinfo=timezone.utc)
+        return ahora() - ultimo_aviso > cooldown
 
 
 async def reactivar_lead(telefono: str):

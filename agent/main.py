@@ -18,10 +18,15 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent.brain import generar_respuesta, obtener_mensaje_error, obtener_mensaje_tipo_no_soportado
-from agent.escalacion import avisar_canal_interno, detectar_palabra_clave, obtener_mensaje_escalacion
+from agent.escalacion import (
+    AVISO_ESCALACION_COOLDOWN,
+    avisar_canal_interno,
+    detectar_palabra_clave,
+    obtener_mensaje_escalacion,
+)
 from agent.memory import (
     crear_borrador,
-    esta_escalado,
+    debe_reavisar_escalacion,
     guardar_mensaje,
     inicializar_db,
     liberar_evento,
@@ -220,13 +225,12 @@ async def procesar_mensaje(msg: MensajeEntrante):
             #
             # Lo unico que cambia con el estado "escalado" es que no se repite la
             # ceremonia de la PRIMERA vez (el mensaje fijo de "te sigue una persona...",
-            # un aviso nuevo al local) cada vez que el cliente vuelve a mencionar una
-            # palabra de la lista: eso ya se hizo una vez, y repetirlo en cada mensaje
-            # seria justamente esquivar la pregunta real con el mismo texto fijo de
-            # siempre. Si en medio de la charla Fran nota que hace falta un humano de
-            # nuevo (otro motivo, otro pedido), puede volver a usar la herramienta
-            # escalar_a_humano las veces que haga falta: eso no se bloquea.
-            if not await esta_escalado(msg.telefono):
+            # un aviso nuevo al local) en CADA mensaje que repite una palabra de la
+            # lista: eso saturaria al local de avisos por la misma gestion. Pero si el
+            # cliente insiste despues de un rato (mas del cooldown), es señal de que el
+            # primer aviso se paso por alto, asi que se manda de nuevo — ver
+            # debe_reavisar_escalacion.
+            if await debe_reavisar_escalacion(msg.telefono, AVISO_ESCALACION_COOLDOWN):
                 palabra = detectar_palabra_clave(msg.texto)
                 if palabra:
                     await _escalar_a_humano(msg, evento_id, palabra)

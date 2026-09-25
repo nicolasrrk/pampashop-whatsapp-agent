@@ -21,11 +21,12 @@ fuera del bot.
 
 import logging
 import os
+from datetime import timedelta
 
 import httpx
 import yaml
 
-from agent.memory import marcar_escalado
+from agent.memory import debe_reavisar_escalacion, marcar_escalado
 
 logger = logging.getLogger("agentkit")
 
@@ -33,6 +34,11 @@ MENSAJE_ESCALACION_DEFAULT = (
     "Te sigue una persona de nuestro equipo a partir de ahora. En breve se pone en "
     "contacto con vos por acá."
 )
+
+# Cuanto esperar antes de volver a mandar el aviso interno por el MISMO telefono. Menos
+# que esto y es la misma gestion repitiendose (ruido); mas que esto y es una señal real
+# de que el primer aviso se paso por alto, asi que conviene avisar de nuevo.
+AVISO_ESCALACION_COOLDOWN = timedelta(minutes=30)
 
 
 def _cargar_config_escalacion() -> dict:
@@ -114,8 +120,16 @@ async def escalar_desde_agente(telefono: str, motivo: str, mensaje_cliente: str)
     misma frase controlada y no algo que el modelo redacte en el momento — la
     prohibicion de prometer tiempos o telefonos es mas facil de sostener en un texto
     fijo que confiando en que el modelo la respete siempre.
+
+    El aviso interno solo se reenvia si paso el cooldown desde el ultimo (ver
+    AVISO_ESCALACION_COOLDOWN): Fran puede llamar esta herramienta varias veces en la
+    misma charla (el prompt se lo permite a proposito), y sin este control cada llamada
+    saturaria al local con un aviso nuevo por la misma gestion.
     """
-    await marcar_escalado(telefono)
-    await avisar_canal_interno(telefono, mensaje_cliente, motivo or "el agente lo considero necesario")
-    logger.info(f"{telefono} escalado por decision del agente: {motivo}")
+    if await debe_reavisar_escalacion(telefono, AVISO_ESCALACION_COOLDOWN):
+        await marcar_escalado(telefono)
+        await avisar_canal_interno(telefono, mensaje_cliente, motivo or "el agente lo considero necesario")
+        logger.info(f"{telefono} escalado por decision del agente: {motivo}")
+    else:
+        logger.info(f"{telefono} ya tiene un aviso interno reciente; no se repite")
     return obtener_mensaje_escalacion()
