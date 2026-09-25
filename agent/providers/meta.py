@@ -16,17 +16,17 @@ import httpx
 from fastapi import Request
 
 from agent.providers.base import MensajeEntrante, ProveedorWhatsApp
+from agent.transcripcion import transcribir_audio
 
 logger = logging.getLogger("agentkit")
 
-# Tipos de mensaje que el agente todavia no puede leer (aparte de imagen, que ahora se
-# descarga y se le manda a Claude — ver _descargar_imagen). Antes se descartaban con un
-# simple "continue" en parsear_webhook: el cliente mandaba un audio y no le llegaba
+# Tipos de mensaje que el agente todavia no puede leer (aparte de imagen y audio, que
+# se procesan — ver _descargar_imagen y la rama "audio" de parsear_webhook). Antes se
+# descartaban con un simple "continue": el cliente mandaba un video y no le llegaba
 # absolutamente nada, ni un error, se quedaba en visto sin saber que paso. Ahora se
 # marcan con "tipo_no_soportado" para que main.py le mande un aviso claro.
 _TIPOS_SIN_SOPORTE = {
     "video": "videos",
-    "audio": "audios",
     "document": "documentos",
     "sticker": "stickers",
     "location": "ubicaciones",
@@ -112,44 +112,51 @@ class ProveedorMeta(ProveedorWhatsApp):
             return False
         return True
 
-    async def _descargar_imagen(self, media_id: str) -> dict | None:
+    async def _descargar_media_crudo(self, media_id: str) -> tuple[bytes, str] | None:
         """
-        Baja una imagen que el cliente mando por WhatsApp y la deja lista para Claude.
-
-        Meta no entrega la imagen en el webhook, solo un media_id: hay que pedirle la
-        URL temporal de descarga y despues bajar el archivo, los dos pasos con el
-        mismo token de acceso. Devuelve None si algo falla (imagen vieja, tipo raro,
-        error de red) para que el llamador pueda avisarle al cliente en vez de
-        colgarse.
+        Baja cualquier archivo adjunto (imagen, audio) que el cliente mando por
+        WhatsApp: (bytes crudos, mime_type). Meta no entrega el archivo en el
+        webhook, solo un media_id: hay que pedirle la URL temporal de descarga y
+        despues bajar el archivo, los dos pasos con el mismo token de acceso.
+        Devuelve None si algo falla (media vieja, error de red) para que el llamador
+        pueda avisarle al cliente en vez de colgarse.
         """
         if not self.access_token:
             return None
 
         headers = {"Authorization": f"Bearer {self.access_token}"}
         try:
-            async with httpx.AsyncClient(timeout=20.0) as cliente:
+            async with httpx.AsyncClient(timeout=30.0) as cliente:
                 r = await cliente.get(
                     f"https://graph.facebook.com/{self.api_version}/{media_id}",
                     headers=headers,
                 )
                 if r.status_code != 200:
-                    logger.error(f"No se pudo obtener la URL de la imagen [{r.status_code}]: {r.text[:300]}")
+                    logger.error(f"No se pudo obtener la URL del media [{r.status_code}]: {r.text[:300]}")
                     return None
                 datos = r.json()
                 url = datos.get("url")
-                mime_type = datos.get("mime_type", "image/jpeg")
+                mime_type = datos.get("mime_type", "application/octet-stream")
                 if not url:
                     return None
 
                 r2 = await cliente.get(url, headers=headers)
                 if r2.status_code != 200:
-                    logger.error(f"No se pudo descargar la imagen [{r2.status_code}]")
+                    logger.error(f"No se pudo descargar el media [{r2.status_code}]")
                     return None
         except httpx.HTTPError as e:
-            logger.error(f"Error de red descargando una imagen de WhatsApp: {e}")
+            logger.error(f"Error de red descargando un adjunto de WhatsApp: {e}")
             return None
 
-        return {"media_type": mime_type, "data": base64.standard_b64encode(r2.content).decode("ascii")}
+        return r2.content, mime_type
+
+    async def _descargar_imagen(self, media_id: str) -> dict | None:
+        """Baja una imagen y la deja en base64, lista para mandarle a Claude."""
+        crudo = await self._descargar_media_crudo(media_id)
+        if crudo is None:
+            return None
+        datos, mime_type = crudo
+        return {"media_type": mime_type, "data": base64.standard_b64encode(datos).decode("ascii")}
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
         """Recorre el payload anidado de Meta Cloud API."""
@@ -197,6 +204,44 @@ class ProveedorMeta(ProveedorWhatsApp):
                                 contexto=contexto,
                             )
                         )
+
+                    elif tipo == "audio":
+                        # Igual que la imagen: se baja y se procesa aca, asi el resto
+                        # del sistema no necesita saber nada de audio ni de Whisper,
+                        # solo recibe texto como si el cliente lo hubiera tipeado.
+                        bloque_audio = msg.get("audio") or {}
+                        crudo = await self._descargar_media_crudo(bloque_audio.get("id", ""))
+                        texto_transcripto = None
+                        if crudo:
+                            datos, mime_type = crudo
+                            extension = "ogg" if "ogg" in mime_type else "mp3" if "mpeg" in mime_type else "m4a"
+                            texto_transcripto = await transcribir_audio(datos, f"audio.{extension}")
+
+                        if texto_transcripto:
+                            mensajes.append(
+                                MensajeEntrante(
+                                    telefono=msg.get("from", ""),
+                                    texto=texto_transcripto,
+                                    mensaje_id=msg.get("id", ""),
+                                    es_propio=False,
+                                    contexto={"evento_id": msg.get("id", "")},
+                                )
+                            )
+                        else:
+                            # No se pudo bajar o transcribir el audio: se marca como
+                            # no soportado en vez de perder el mensaje.
+                            mensajes.append(
+                                MensajeEntrante(
+                                    telefono=msg.get("from", ""),
+                                    texto="[el cliente envio un audio]",
+                                    mensaje_id=msg.get("id", ""),
+                                    es_propio=False,
+                                    contexto={
+                                        "evento_id": msg.get("id", ""),
+                                        "tipo_no_soportado": "audio",
+                                    },
+                                )
+                            )
 
                     elif tipo in _TIPOS_SIN_SOPORTE:
                         mensajes.append(
