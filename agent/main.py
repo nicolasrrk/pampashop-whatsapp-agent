@@ -232,7 +232,7 @@ async def procesar_mensaje(msg: MensajeEntrante):
                 # agrega el mensaje nuevo al final, y asi no queda duplicado.
                 historial = await obtener_historial(msg.telefono)
                 respuesta, es_respuesta_real = await generar_respuesta(
-                    msg.texto, historial, imagen=msg.contexto.get("imagen")
+                    msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
                 )
 
             # Los avisos tecnicos (error/fallback) se mandan directo: frenarlos a

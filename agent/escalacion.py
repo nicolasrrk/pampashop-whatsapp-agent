@@ -1,10 +1,22 @@
 # agent/escalacion.py — Deteccion y aviso de escalacion a humano
 """
-Logica de "pasar a un humano", siguiendo el mismo criterio que whatsapp-closer-agentkit:
-si el mensaje trae una palabra de la lista de escalacion, el agente NO llama al modelo.
-Manda un unico mensaje fijo, marca esa conversacion como escalada (agent/memory.py se
-encarga de que desde ahi el agente no le vuelva a contestar) y avisa por un canal interno
-aparte — Slack o un WhatsApp interno — para que una persona siga el caso por fuera del bot.
+Logica de "pasar a un humano". Hay dos caminos que llegan a lo mismo:
+
+1. Por palabra clave (detectar_palabra_clave, en main.py, ANTES de llamar al modelo):
+   si el mensaje trae una palabra de la lista, ni se gasta la llamada a Claude. Barato
+   y rapido, pero depende de una lista fija — un cliente que pida lo mismo con otras
+   palabras no la dispara.
+2. Por decision del agente (escalar_desde_agente, llamada como herramienta desde
+   brain.py): Fran puede reconocer que hace falta un humano en casos que la lista de
+   palabras no cubre (se probo esto: un cliente escribio "quiero hablar con una
+   persona" sin decir "persona real" ni "hablar con alguien" tal cual, y Fran penso
+   que derivo pero el sistema nunca se entero). Este camino es el respaldo para esos
+   casos.
+
+Los dos terminan igual: marcan la conversacion como escalada (agent/memory.py se
+encarga de que desde ahi el agente no le vuelva a contestar) y avisan por un canal
+interno aparte — Slack o un WhatsApp interno — para que una persona siga el caso por
+fuera del bot.
 """
 
 import logging
@@ -12,6 +24,8 @@ import os
 
 import httpx
 import yaml
+
+from agent.memory import marcar_escalado
 
 logger = logging.getLogger("agentkit")
 
@@ -86,3 +100,22 @@ async def avisar_canal_interno(telefono: str, mensaje_cliente: str, motivo: str)
 
     logger.warning(f"Escalacion sin canal interno configurado (ESCALACION_SLACK_WEBHOOK / "
                     f"ESCALACION_WHATSAPP_NUMERO vacios): {texto}")
+
+
+async def escalar_desde_agente(telefono: str, motivo: str, mensaje_cliente: str) -> str:
+    """
+    Escalacion pedida por el propio Fran, como herramienta, en vez de por deteccion
+    de palabra clave. "telefono" viene siempre del backend (main.py / brain.py), NUNCA
+    del modelo: no hay que confiar en que Claude devuelva el numero correcto del
+    cliente, ademas de que ni falta hace pedirselo.
+
+    Hace exactamente lo mismo que la escalacion por palabra clave (marcar, avisar) y
+    devuelve el mismo mensaje fijo, para que la respuesta al cliente sea siempre la
+    misma frase controlada y no algo que el modelo redacte en el momento — la
+    prohibicion de prometer tiempos o telefonos es mas facil de sostener en un texto
+    fijo que confiando en que el modelo la respete siempre.
+    """
+    await marcar_escalado(telefono)
+    await avisar_canal_interno(telefono, mensaje_cliente, motivo or "el agente lo considero necesario")
+    logger.info(f"{telefono} escalado por decision del agente: {motivo}")
+    return obtener_mensaje_escalacion()

@@ -25,6 +25,7 @@ import anthropic
 import yaml
 from dotenv import load_dotenv
 
+from agent.escalacion import escalar_desde_agente
 from agent.tools import buscar_productos_tienda_nube, consultar_pedido, obtener_detalle_producto
 
 load_dotenv()
@@ -128,9 +129,42 @@ TOOLS = [
             "required": ["numero_pedido"],
         },
     },
+    {
+        "name": "escalar_a_humano",
+        "description": (
+            "Deriva la conversacion a una persona del equipo AHORA. Usala cuando el "
+            "cliente pide algo que vos no podes resolver con certeza: una reserva, "
+            "bloquear stock, coordinar un retiro o un pago por fuera de la web, un "
+            "reclamo, o cualquier gestion puntual — inclusive si no usa ninguna "
+            "palabra especial, con que la intencion sea clara alcanza (\"quiero "
+            "hablar con una persona\", \"necesito que alguien me ayude con esto\", "
+            "etc.). Despues de llamar esta herramienta la conversacion queda cerrada "
+            "para vos: no va a haber otro turno tuyo en este mensaje, el cliente ya "
+            "recibe la respuesta de derivacion automaticamente. No la uses para "
+            "preguntas que si podes responder vos con las otras herramientas."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "motivo": {
+                    "type": "string",
+                    "description": (
+                        "Resumen corto de por que hace falta un humano (ej: "
+                        "'pide reservar un par', 'reclamo por un pedido', "
+                        "'quiere coordinar un pago especial')."
+                    ),
+                }
+            },
+            "required": ["motivo"],
+        },
+    },
 ]
 
-# Mapa nombre de herramienta -> funcion async que la implementa (todas en agent/tools.py)
+# Mapa nombre de herramienta -> funcion async que la implementa (todas en agent/tools.py).
+# "escalar_a_humano" NO esta aca a proposito: a diferencia de estas tres (solo lectura,
+# no necesitan saber quien pregunta), esa herramienta tiene que marcar al CLIENTE REAL
+# como escalado, y el telefono no puede salir de lo que diga el modelo — sale del
+# backend. Se maneja aparte, en el propio loop de generar_respuesta.
 _HERRAMIENTAS = {
     "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"]),
     "obtener_detalle_producto": lambda i: obtener_detalle_producto(i["product_id"]),
@@ -277,6 +311,7 @@ async def _ejecutar_herramienta(nombre: str, entrada: dict, cache: dict | None =
 async def generar_respuesta(
     mensaje: str,
     historial: list[dict],
+    telefono: str = "",
     imagen: dict | None = None,
 ) -> tuple[str, bool]:
     """
@@ -285,6 +320,10 @@ async def generar_respuesta(
     Args:
         mensaje: el mensaje nuevo del cliente (puede venir vacio si solo mando una foto)
         historial: los mensajes anteriores, [{"role": "user"|"assistant", "content": "..."}]
+        telefono: el numero del cliente. Solo lo usa la herramienta escalar_a_humano,
+            para marcar la conversacion correcta como escalada — nunca sale de lo que
+            diga el modelo. Vacio por default para no romper llamadas que no
+            necesitan escalar (tests, por ejemplo), pero en produccion siempre viene.
         imagen: opcional, {"media_type": "image/jpeg", "data": "<base64 sin prefijo>"}.
             Claude ve imagenes de forma nativa: no hace falta describirla aparte, se
             manda junto con el texto en el mismo mensaje del usuario.
@@ -351,6 +390,17 @@ async def generar_respuesta(
             resultados = []
             for tc in tool_use_blocks:
                 logger.info(f"El modelo pidio la herramienta {tc.name} con {tc.input}")
+
+                if tc.name == "escalar_a_humano":
+                    # Esta corta la conversacion ACA, no sigue el ciclo normal: no
+                    # tiene sentido que el modelo siga pidiendo cosas despues de
+                    # derivar. El texto que le llega al cliente es siempre el mensaje
+                    # fijo (obtener_mensaje_escalacion), nunca algo que Claude redacte
+                    # en el momento — ver escalar_desde_agente para el motivo.
+                    motivo = tc.input.get("motivo", "")
+                    texto_fijo = await escalar_desde_agente(telefono, motivo, mensaje)
+                    return texto_fijo, True
+
                 # tc.input ya llega como dict: a diferencia del formato estilo OpenAI,
                 # Claude no manda los argumentos como un string JSON para parsear.
                 resultado = await _ejecutar_herramienta(tc.name, tc.input, cache_herramientas)
