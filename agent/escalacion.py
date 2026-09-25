@@ -59,6 +59,33 @@ def obtener_mensaje_escalacion() -> str:
     return _cargar_config_escalacion().get("mensaje") or MENSAJE_ESCALACION_DEFAULT
 
 
+MENSAJE_ESCALADO_DE_NUEVO_DEFAULT = (
+    "Ya le avisé a alguien de nuestro equipo sobre tu consulta — en breve se va a "
+    "comunicar con vos por acá. Gracias por la paciencia 🙏"
+)
+
+
+def obtener_mensaje_escalado_de_nuevo() -> str:
+    """
+    Que decirle a un cliente que ya esta escalado y vuelve a escribir, MIENTRAS
+    espera que lo atienda una persona.
+
+    Antes, una vez escalada la conversacion, el bot dejaba de contestar por completo
+    hasta que alguien lo reactivara a mano con scripts/leads.py — si el cliente
+    volvia a escribir mientras tanto (algo muy comun: "hola?", "sigo esperando"), no
+    recibia absolutamente nada, ni siquiera si el aviso interno nunca llego a
+    destino. Ese aviso interno es responsabilidad del humano, no algo de lo que el
+    cliente tenga que hacerse cargo con silencio.
+
+    Es un mensaje fijo, no algo que redacte Claude: en este estado el bot no debe
+    intentar resolver nada de nuevo (el motivo por el que se escalo sigue en pie),
+    solo tranquilizar. Se manda cada vez que escribe, sin límite — más vale
+    repetitivo que dejarlo sin nada.
+    """
+    config = _cargar_config_escalacion()
+    return config.get("mensaje_seguimiento") or MENSAJE_ESCALADO_DE_NUEVO_DEFAULT
+
+
 async def avisar_canal_interno(telefono: str, mensaje_cliente: str, motivo: str) -> None:
     """
     Manda el aviso de escalacion. Usa Slack si esta configurado; si no, un WhatsApp

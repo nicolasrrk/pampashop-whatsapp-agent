@@ -18,7 +18,12 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent.brain import generar_respuesta, obtener_mensaje_error, obtener_mensaje_tipo_no_soportado
-from agent.escalacion import avisar_canal_interno, detectar_palabra_clave, obtener_mensaje_escalacion
+from agent.escalacion import (
+    avisar_canal_interno,
+    detectar_palabra_clave,
+    obtener_mensaje_escalacion,
+    obtener_mensaje_escalado_de_nuevo,
+)
 from agent.memory import (
     crear_borrador,
     esta_escalado,
@@ -210,30 +215,36 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # scripts/leads.py muestre quien escribio sin tener que abrir WhatsApp.
             await registrar_contacto(msg.telefono, msg.texto)
 
-            # Si ya escalamos este numero antes, el agente no le vuelve a contestar
-            # nunca mas: lo dejo para que lo siga una persona, igual que
-            # whatsapp-closer-agentkit ("desde aca no se contesta mas en este chat").
+            # Si ya escalamos este numero antes, el agente ya no vuelve a INTENTAR
+            # RESOLVER nada (el motivo por el que se escalo sigue en pie, y no tiene
+            # sentido gastar una llamada a Claude para eso) — pero SI le contesta algo,
+            # para no dejarlo en silencio total. Antes se cortaba en seco: si el aviso
+            # interno nunca llegaba a destino (paso de verdad: ver el commit de este
+            # cambio), el cliente se quedaba sin ninguna respuesta, ni siquiera un
+            # "ya te estamos por contactar". Ese aviso es responsabilidad de una
+            # persona, no algo que el cliente tenga que sufrir en silencio.
             if await esta_escalado(msg.telefono):
-                logger.info(f"{msg.telefono} ya esta escalado: no se le contesta")
-                return
-
-            palabra = detectar_palabra_clave(msg.texto)
-            if palabra:
-                await _escalar_a_humano(msg, evento_id, palabra)
-                return
-
-            # Audio, video, documentos, o una imagen que no se pudo descargar: no se
-            # llama al modelo, se responde directo con el aviso. Ver providers/meta.py.
-            tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
-            if tipo_no_soportado:
-                respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
+                logger.info(f"{msg.telefono} ya esta escalado: se le manda un aviso corto")
+                respuesta, es_respuesta_real = obtener_mensaje_escalado_de_nuevo(), True
             else:
-                # El historial se lee ANTES de guardar el mensaje actual: brain.py
-                # agrega el mensaje nuevo al final, y asi no queda duplicado.
-                historial = await obtener_historial(msg.telefono)
-                respuesta, es_respuesta_real = await generar_respuesta(
-                    msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
-                )
+                palabra = detectar_palabra_clave(msg.texto)
+                if palabra:
+                    await _escalar_a_humano(msg, evento_id, palabra)
+                    return
+
+                # Audio, video, documentos, o una imagen que no se pudo descargar: no
+                # se llama al modelo, se responde directo con el aviso. Ver
+                # providers/meta.py.
+                tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
+                if tipo_no_soportado:
+                    respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
+                else:
+                    # El historial se lee ANTES de guardar el mensaje actual: brain.py
+                    # agrega el mensaje nuevo al final, y asi no queda duplicado.
+                    historial = await obtener_historial(msg.telefono)
+                    respuesta, es_respuesta_real = await generar_respuesta(
+                        msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
+                    )
 
             # Los avisos tecnicos (error/fallback) se mandan directo: frenarlos a
             # esperar aprobacion solo deja al cliente sin nada mas tiempo.
