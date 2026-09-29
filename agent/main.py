@@ -17,7 +17,12 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
-from agent.brain import generar_respuesta, obtener_mensaje_error, obtener_mensaje_tipo_no_soportado
+from agent.brain import (
+    generar_respuesta,
+    obtener_mensaje_bienvenida,
+    obtener_mensaje_error,
+    obtener_mensaje_tipo_no_soportado,
+)
 from agent.escalacion import (
     AVISO_ESCALACION_COOLDOWN,
     avisar_canal_interno,
@@ -214,7 +219,14 @@ async def procesar_mensaje(msg: MensajeEntrante):
         try:
             # CRM: se registra CUALQUIER mensaje entrante, escale o no, para que
             # scripts/leads.py muestre quien escribio sin tener que abrir WhatsApp.
-            await registrar_contacto(msg.telefono, msg.texto)
+            lead = await registrar_contacto(msg.telefono, msg.texto)
+
+            # Primerisimo mensaje de este numero (registrar_contacto crea el lead con
+            # veces_contactado=1): se manda el saludo fijo de bienvenida como un
+            # mensaje APARTE, antes de contestar lo que haya preguntado. No se repite
+            # en los mensajes siguientes porque veces_contactado ya no vuelve a valer 1.
+            if lead.veces_contactado == 1:
+                await _enviar_bienvenida(msg)
 
             # Escalar ya NO apaga al bot. Antes, apenas se marcaba una conversacion,
             # el agente dejaba de contestar por completo (o, en el intento anterior de
@@ -301,6 +313,35 @@ async def procesar_mensaje(msg: MensajeEntrante):
                 await proveedor.enviar_mensaje(msg.telefono, obtener_mensaje_error(), msg.contexto)
             except Exception:  # noqa: BLE001
                 logger.error("Tampoco se pudo avisarle al cliente del error")
+
+
+async def _enviar_bienvenida(msg: MensajeEntrante):
+    """
+    Manda el saludo fijo a un numero que escribe por primera vez, como mensaje aparte
+    de lo que Fran conteste despues. Un fallo aca (no se pudo enviar, no hay texto
+    configurado) NUNCA debe frenar la respuesta real: se loguea y se sigue de largo,
+    total lo importante — contestarle al cliente — pasa despues, en procesar_mensaje.
+    """
+    texto = obtener_mensaje_bienvenida()
+    if not texto:
+        return
+
+    try:
+        if MODO_ENVIO == "borrador":
+            # Mismo circuito que cualquier otro mensaje real en modo borrador: queda
+            # pendiente en scripts/bandeja.py / el panel, no sale solo.
+            await crear_borrador(msg.telefono, "(primer contacto)", texto, json.dumps(msg.contexto))
+            logger.info(f"{msg.telefono}: bienvenida en borrador, pendiente de aprobar")
+            return
+
+        enviado = await proveedor.enviar_mensaje(msg.telefono, texto, msg.contexto)
+        if enviado:
+            await guardar_mensaje(msg.telefono, "assistant", texto)
+            logger.info(f"Bienvenida enviada a {msg.telefono}")
+        else:
+            logger.error(f"No se pudo enviar la bienvenida a {msg.telefono}")
+    except Exception as e:  # noqa: BLE001 — un fallo aca no debe tumbar el resto del mensaje
+        logger.error(f"Error mandando la bienvenida a {msg.telefono}: {e}")
 
 
 async def _escalar_a_humano(msg: MensajeEntrante, evento_id: str, palabra: str):

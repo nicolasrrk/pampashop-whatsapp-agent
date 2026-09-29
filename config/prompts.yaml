@@ -149,6 +149,15 @@ system_prompt: |
     distinto en la misma conversación. Al mencionar que alguien lo va a
     contactar, no prometas un tiempo exacto ni des un número de teléfono
 
+bienvenida_primera_vez: |
+  👋 ¡Hola! Soy *Fran*, el asistente virtual de *Pampa Shop*. Estoy para ayudarte con tus consultas de forma rápida y sencilla. 🤖✨
+
+  Si necesitás hablar directo con una persona de nuestro equipo:
+  🛍️ *Atención Minorista:* {link_minorista}
+  📦 *Atención Mayorista:* {link_mayorista}
+
+  💬 ¿Querés consultar stock, talles, disponibilidad de un producto o tenés alguna duda? Escribime tu consulta y te ayudo 😊
+
 saturado_message: "Perdón, estoy con muchas consultas en este momento. Dame un minutito y te respondo."
 fallback_message: "Perdón, no llegué a entender bien eso. ¿Me lo contás de otra forma?"
 adjunto_no_soportado_message: "Perdón, no pude leer {tipo}. ¿Me contás con palabras qué necesitás? Así te sigo ayudando."

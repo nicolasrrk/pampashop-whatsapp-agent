@@ -239,6 +239,29 @@ def obtener_mensaje_fallback() -> str:
     )
 
 
+def obtener_mensaje_bienvenida() -> str:
+    """
+    Saludo fijo para el primerisimo mensaje de un numero nuevo (main.py lo dispara
+    cuando el lead recien se crea). Es texto controlado, no lo redacta el modelo, para
+    que los datos de contacto directo salgan siempre exactos.
+
+    Los links de WhatsApp se arman en el momento con los numeros del .env: si alguno no
+    esta configurado, esa linea queda con un aviso en vez de un link roto.
+    """
+    plantilla = cargar_config_prompts().get("bienvenida_primera_vez", "")
+    if not plantilla:
+        return ""
+
+    def _link(env_var: str) -> str:
+        numero = os.getenv(env_var, "").strip()
+        return f"https://wa.me/{numero}" if numero else "(todavía no disponible)"
+
+    return plantilla.format(
+        link_minorista=_link("ESCALACION_WHATSAPP_NUMERO"),
+        link_mayorista=_link("ESCALACION_WHATSAPP_MAYORISTA"),
+    ).strip()
+
+
 def obtener_mensaje_tipo_no_soportado(tipo: str) -> str:
     """
     Aviso para cuando el cliente manda algo que el agente todavia no puede leer:
