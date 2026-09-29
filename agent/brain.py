@@ -57,6 +57,27 @@ MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS") or "4096")
 # latencia de un solo mensaje de WhatsApp.
 MAX_PASOS_HERRAMIENTAS = int(os.getenv("ANTHROPIC_MAX_PASOS_HERRAMIENTAS") or "10")
 
+# Precio por millon de tokens (entrada, salida), en USD. Para el dashboard de metricas:
+# es una ESTIMACION (no incluye el descuento real de los tokens de cache, que salen mas
+# baratos que un input normal), pero alcanza para tener una nocion de gasto en vivo sin
+# depender de la consola de Anthropic. Se matchea por prefijo porque el modelo puede
+# traer un sufijo de version (ej. "claude-sonnet-5-20250929").
+PRECIOS_POR_MILLON = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def _calcular_costo(modelo: str, tokens_entrada: int, tokens_salida: int) -> float:
+    for prefijo, (precio_in, precio_out) in PRECIOS_POR_MILLON.items():
+        if modelo.startswith(prefijo):
+            return (tokens_entrada * precio_in + tokens_salida * precio_out) / 1_000_000
+    # Modelo no reconocido (ej. uno nuevo que todavia no esta en la tabla): se asume el
+    # precio de Sonnet en vez de devolver 0, para que el dashboard no muestre "gratis".
+    precio_in, precio_out = PRECIOS_POR_MILLON["claude-sonnet-5"]
+    return (tokens_entrada * precio_in + tokens_salida * precio_out) / 1_000_000
+
 # ── Herramientas disponibles para el modelo ─────────────────────────────────
 # Formato nativo de Claude: "input_schema" en vez del "parameters" envuelto en
 # "function" que usa el formato estilo OpenAI (el que usaba Groq). Los nombres y
@@ -314,7 +335,7 @@ async def generar_respuesta(
     historial: list[dict],
     telefono: str = "",
     imagen: dict | None = None,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, dict | None]:
     """
     Genera una respuesta con Claude, usando herramientas de Tienda Nube si hace falta.
 
@@ -330,15 +351,20 @@ async def generar_respuesta(
             manda junto con el texto en el mismo mensaje del usuario.
 
     Returns:
-        (texto, es_respuesta_real)
+        (texto, es_respuesta_real, uso)
 
         "es_respuesta_real" es False cuando lo que se devuelve es un aviso tecnico
         (error, saturacion o fallback) y no una respuesta del agente. main.py lo usa
         para no guardar esos avisos en el historial: si se guardaran, quedarian
         contaminando el contexto de todos los mensajes siguientes.
+
+        "uso" es None salvo en una respuesta real exitosa: ahi trae
+        {"modelo", "tokens_entrada", "tokens_salida", "tokens_cache", "pasos_herramientas",
+        "costo_usd"} para que main.py lo persista (agent/memory.py: guardar_uso) y
+        alimente el dashboard de metricas.
     """
     if not imagen and (not mensaje or len(mensaje.strip()) < 2):
-        return obtener_mensaje_fallback(), False
+        return obtener_mensaje_fallback(), False, None
 
     system_prompt = cargar_system_prompt()
     mensajes: list[dict] = [{"role": m["role"], "content": m["content"]} for m in historial]
@@ -456,10 +482,10 @@ async def generar_respuesta(
         # minuto. El SDK ya reintenta con espera, asi que si igual llego hasta aca es
         # que sigue saturado: no tiene sentido hacer esperar mas al cliente en silencio.
         logger.error(f"Rate limit de Anthropic ({MODELO}): {e}")
-        return obtener_mensaje_saturado(), False
+        return obtener_mensaje_saturado(), False, None
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error llamando a Claude: {e}")
-        return obtener_mensaje_error(), False
+        return obtener_mensaje_error(), False, None
 
     if respuesta.stop_reason == "max_tokens":
         logger.warning(
@@ -470,12 +496,22 @@ async def generar_respuesta(
     texto = _limpiar_formato_whatsapp(_extraer_texto(respuesta))
     if not texto:
         logger.warning("El modelo devolvio una respuesta sin texto")
-        return obtener_mensaje_fallback(), False
+        return obtener_mensaje_fallback(), False, None
 
-    uso = respuesta.usage
+    uso_api = respuesta.usage
+    tokens_cache = getattr(uso_api, "cache_read_input_tokens", 0) or 0
+    costo = _calcular_costo(MODELO, uso_api.input_tokens, uso_api.output_tokens)
     logger.info(
         f"Respuesta generada con {MODELO} "
-        f"({uso.input_tokens} in / {uso.output_tokens} out, "
-        f"{getattr(uso, 'cache_read_input_tokens', 0)} de cache, {pasos} pasos de herramientas)"
+        f"({uso_api.input_tokens} in / {uso_api.output_tokens} out, "
+        f"{tokens_cache} de cache, {pasos} pasos de herramientas, ~${costo:.4f})"
     )
-    return texto, True
+    uso = {
+        "modelo": MODELO,
+        "tokens_entrada": uso_api.input_tokens,
+        "tokens_salida": uso_api.output_tokens,
+        "tokens_cache": tokens_cache,
+        "pasos_herramientas": pasos,
+        "costo_usd": costo,
+    }
+    return texto, True, uso

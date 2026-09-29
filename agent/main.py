@@ -28,6 +28,7 @@ from agent.memory import (
     crear_borrador,
     debe_reavisar_escalacion,
     guardar_mensaje,
+    guardar_uso,
     inicializar_db,
     liberar_evento,
     limpiar_eventos_viejos,
@@ -239,13 +240,14 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # Audio, video, documentos, o una imagen que no se pudo descargar: no se
             # llama al modelo, se responde directo con el aviso. Ver providers/meta.py.
             tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
+            uso = None
             if tipo_no_soportado:
                 respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
             else:
                 # El historial se lee ANTES de guardar el mensaje actual: brain.py
                 # agrega el mensaje nuevo al final, y asi no queda duplicado.
                 historial = await obtener_historial(msg.telefono)
-                respuesta, es_respuesta_real = await generar_respuesta(
+                respuesta, es_respuesta_real, uso = await generar_respuesta(
                     msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
                 )
 
@@ -275,6 +277,20 @@ async def procesar_mensaje(msg: MensajeEntrante):
             if es_respuesta_real:
                 await guardar_mensaje(msg.telefono, "user", msg.texto)
                 await guardar_mensaje(msg.telefono, "assistant", respuesta)
+                # "uso" es None para los avisos de tipo no soportado (no hubo llamada a
+                # Claude) y para cualquier caso que ya se filtro arriba: solo se guarda
+                # cuando de verdad se consumieron tokens, para que el dashboard de
+                # metricas no cuente respuestas que no costaron nada.
+                if uso:
+                    await guardar_uso(
+                        msg.telefono,
+                        uso["modelo"],
+                        uso["tokens_entrada"],
+                        uso["tokens_salida"],
+                        uso["tokens_cache"],
+                        uso["pasos_herramientas"],
+                        uso["costo_usd"],
+                    )
 
             logger.info(f"Respuesta enviada a {msg.telefono}: {respuesta}")
 

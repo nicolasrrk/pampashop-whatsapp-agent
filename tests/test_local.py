@@ -105,8 +105,13 @@ async def main():
         historial = await obtener_historial(TELEFONO_TEST)
 
         print("\nFran: ", end="", flush=True)
-        respuesta, es_respuesta_real = await generar_respuesta(mensaje, historial, telefono=TELEFONO_TEST)
+        respuesta, es_respuesta_real, uso = await generar_respuesta(mensaje, historial, telefono=TELEFONO_TEST)
         print(respuesta)
+        if uso:
+            print(
+                f"       [{uso['tokens_entrada']} in / {uso['tokens_salida']} out, "
+                f"~${uso['costo_usd']:.4f}]"
+            )
         print()
 
         # Igual que en produccion: los avisos tecnicos no entran al historial

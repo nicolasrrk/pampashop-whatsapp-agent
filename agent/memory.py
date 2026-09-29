@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Integer, String, Text, delete, inspect, select, text
+from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -102,6 +102,28 @@ class Lead(Base):
     )
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
+class Uso(Base):
+    """
+    Consumo de Claude por cada respuesta real del agente.
+
+    Una fila por mensaje de cliente contestado (no por llamada HTTP a Anthropic): si un
+    mensaje disparo varios pasos de herramientas, esta fila ya trae el total acumulado
+    de esa tanda. Sirve para el dashboard de metricas (agent/panel.py).
+    """
+
+    __tablename__ = "uso"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    modelo: Mapped[str] = mapped_column(String(50))
+    tokens_entrada: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_salida: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_cache: Mapped[int] = mapped_column(Integer, default=0)
+    pasos_herramientas: Mapped[int] = mapped_column(Integer, default=0)
+    costo_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora, index=True)
 
 
 class Borrador(Base):
@@ -359,6 +381,115 @@ async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> lis
         }
         for m in mensajes
     ]
+
+
+# ── Metricas (dashboard) ───────────────────────────────────────────────────
+
+
+async def guardar_uso(
+    telefono: str,
+    modelo: str,
+    tokens_entrada: int,
+    tokens_salida: int,
+    tokens_cache: int,
+    pasos_herramientas: int,
+    costo_usd: float,
+):
+    """Registra el consumo de UNA respuesta real del agente (ver clase Uso)."""
+    async with async_session() as session:
+        session.add(
+            Uso(
+                telefono=telefono,
+                modelo=modelo,
+                tokens_entrada=tokens_entrada,
+                tokens_salida=tokens_salida,
+                tokens_cache=tokens_cache,
+                pasos_herramientas=pasos_herramientas,
+                costo_usd=costo_usd,
+                creado_en=ahora(),
+            )
+        )
+        await session.commit()
+
+
+def _inicio_del_dia() -> datetime:
+    """Medianoche de hoy, en UTC. La base guarda todo en UTC; es una aproximacion
+    simple y consistente, aunque no coincida exacto con la medianoche en Argentina."""
+    return ahora().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+async def obtener_metricas(dias_serie: int = 7) -> dict:
+    """
+    Junta todo lo que muestra el dashboard en una sola consulta por tabla: mensajes
+    entrantes/salientes, leads, escalados, consumo de Claude (tokens y costo estimado),
+    y una serie de los ultimos N dias de mensajes entrantes para el grafico.
+    """
+    inicio_hoy = _inicio_del_dia()
+    desde_serie = inicio_hoy - timedelta(days=dias_serie - 1)
+
+    async with async_session() as session:
+
+        async def _contar(modelo, *condiciones) -> int:
+            return await session.scalar(select(func.count()).select_from(modelo).where(*condiciones)) or 0
+
+        mensajes_cliente_total = await _contar(Mensaje, Mensaje.role == "user")
+        mensajes_bot_total = await _contar(Mensaje, Mensaje.role == "assistant")
+        mensajes_cliente_hoy = await _contar(Mensaje, Mensaje.role == "user", Mensaje.timestamp >= inicio_hoy)
+        mensajes_bot_hoy = await _contar(Mensaje, Mensaje.role == "assistant", Mensaje.timestamp >= inicio_hoy)
+
+        leads_total = await _contar(Lead)
+        leads_hoy = await _contar(Lead, Lead.creado_en >= inicio_hoy)
+        escalados_activos = await _contar(Lead, Lead.escalado.is_(True))
+        escalados_hoy = await _contar(Lead, Lead.escalado.is_(True), Lead.ultimo_aviso_escalado >= inicio_hoy)
+
+        async def _uso(*condiciones) -> dict:
+            fila = await session.execute(
+                select(
+                    func.coalesce(func.sum(Uso.tokens_entrada), 0),
+                    func.coalesce(func.sum(Uso.tokens_salida), 0),
+                    func.coalesce(func.sum(Uso.tokens_cache), 0),
+                    func.coalesce(func.sum(Uso.costo_usd), 0.0),
+                    func.count(),
+                ).where(*condiciones)
+            )
+            te, ts, tc, costo, respuestas = fila.one()
+            return {
+                "tokens_entrada": int(te),
+                "tokens_salida": int(ts),
+                "tokens_cache": int(tc),
+                "costo_usd": round(float(costo), 4),
+                "respuestas": int(respuestas),
+            }
+
+        uso_total = await _uso()
+        uso_hoy = await _uso(Uso.creado_en >= inicio_hoy)
+
+        filas_serie = await session.execute(
+            select(func.date(Mensaje.timestamp), func.count())
+            .where(Mensaje.role == "user", Mensaje.timestamp >= desde_serie)
+            .group_by(func.date(Mensaje.timestamp))
+        )
+        # func.date() en SQLite da un string "YYYY-MM-DD"; en Postgres da un date().
+        # str(...)[:10] normaliza los dos casos al mismo formato de clave.
+        conteos = {str(dia)[:10]: cantidad for dia, cantidad in filas_serie.all()}
+        serie = []
+        for i in range(dias_serie):
+            dia = (desde_serie + timedelta(days=i)).date().isoformat()
+            serie.append({"dia": dia, "mensajes": conteos.get(dia, 0)})
+
+    return {
+        "mensajes": {
+            "cliente_hoy": mensajes_cliente_hoy,
+            "cliente_total": mensajes_cliente_total,
+            "bot_hoy": mensajes_bot_hoy,
+            "bot_total": mensajes_bot_total,
+        },
+        "leads": {"total": leads_total, "hoy": leads_hoy},
+        "escalados": {"activos": escalados_activos, "hoy": escalados_hoy},
+        "uso_hoy": uso_hoy,
+        "uso_total": uso_total,
+        "serie_mensajes": serie,
+    }
 
 
 # ── Modo borrador ──────────────────────────────────────────────────────────

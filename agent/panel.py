@@ -26,6 +26,7 @@ from agent.memory import (
     listar_leads,
     marcar_borrador,
     obtener_conversacion_completa,
+    obtener_metricas,
 )
 
 logger = logging.getLogger("agentkit")
@@ -79,6 +80,13 @@ async def datos_conversacion(telefono: str, request: Request):
     """La conversacion completa con un cliente."""
     _verificar(request)
     return await obtener_conversacion_completa(telefono)
+
+
+@router.get("/datos/metricas")
+async def datos_metricas(request: Request):
+    """Todo lo que pinta el dashboard: mensajes, escalados, leads y consumo de Claude."""
+    _verificar(request)
+    return await obtener_metricas()
 
 
 @router.get("/datos/borradores")
@@ -164,6 +172,16 @@ async def panel(request: Request):
     token = request.query_params.get("token") or request.cookies.get("panel_token") or ""
     respuesta = HTMLResponse(PAGINA)
     # httponly=False a proposito: el JS de la pagina lo lee para las llamadas a /datos.
+    respuesta.set_cookie("panel_token", token, max_age=60 * 60 * 24 * 30, samesite="strict")
+    return respuesta
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    """Pagina de metricas, separada del panel de chats: otra estetica, otro proposito."""
+    _verificar(request)
+    token = request.query_params.get("token") or request.cookies.get("panel_token") or ""
+    respuesta = HTMLResponse(DASHBOARD_PAGINA)
     respuesta.set_cookie("panel_token", token, max_age=60 * 60 * 24 * 30, samesite="strict")
     return respuesta
 
@@ -277,6 +295,7 @@ PAGINA = """<!doctype html>
   <div class="barra">
     <button class="volver" id="volver" aria-label="Volver">&larr;</button>
     <h1 id="titulo">Fran</h1>
+    <a id="linkMetricas" href="#" style="color:#fff;opacity:.85;text-decoration:none;font-size:19px;line-height:1;margin-right:2px;" title="Metricas">&#128202;</a>
     <span class="vivo"><span class="punto" id="punto"></span><span id="contador"></span></span>
   </div>
   <nav id="nav">
@@ -463,6 +482,223 @@ async function refrescar(forzarAbajo) {
 }
 
 setInterval(refrescar, 4000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refrescar(); });
+refrescar();
+
+function leerCookie(nombre) {
+  const fila = document.cookie.split("; ").find(f => f.startsWith(nombre + "="));
+  return fila ? decodeURIComponent(fila.split("=")[1]) : "";
+}
+$("linkMetricas").href = "/panel/dashboard?token=" + encodeURIComponent(
+  new URLSearchParams(location.search).get("token") || leerCookie("panel_token")
+);
+</script>
+</body>
+</html>
+"""
+
+
+DASHBOARD_PAGINA = """<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fran — Métricas</title>
+<style>
+  :root {
+    --fondo:#05060a; --panel:#0d1020; --borde:#1c2340; --texto:#e8ecff; --suave:#7c86b8;
+    --cian:#00e5ff; --magenta:#ff2fd0; --violeta:#7c5cff; --verde:#39ff9d;
+    --sombra-cian:0 0 18px rgba(0,229,255,.35); --sombra-magenta:0 0 18px rgba(255,47,208,.3);
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    margin:0; min-height:100vh; color:var(--texto);
+    font:14.5px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif;
+    background:
+      radial-gradient(circle at 15% 0%, rgba(124,92,255,.16), transparent 45%),
+      radial-gradient(circle at 90% 15%, rgba(0,229,255,.13), transparent 40%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 42px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 42px),
+      var(--fondo);
+    padding-bottom:36px;
+  }
+  header { position:sticky; top:0; z-index:10; backdrop-filter:blur(10px);
+    background:rgba(5,6,10,.82); border-bottom:1px solid var(--borde); }
+  .barra { max-width:980px; margin:0 auto; display:flex; align-items:center; gap:12px; padding:16px 18px; }
+  .volver { color:var(--suave); text-decoration:none; font-size:20px; line-height:1; flex-shrink:0; }
+  .titulos { flex:1; min-width:0; }
+  .titulos h1 {
+    margin:0; font-size:18px; font-weight:700; letter-spacing:.5px;
+    background:linear-gradient(90deg, var(--cian), var(--violeta) 60%, var(--magenta));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .titulos p { margin:2px 0 0; font-size:11.5px; color:var(--suave); letter-spacing:.4px; text-transform:uppercase; }
+  .vivo { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--verde);
+    letter-spacing:.5px; text-transform:uppercase; flex-shrink:0; }
+  .punto { width:7px; height:7px; border-radius:50%; background:var(--verde);
+    box-shadow:0 0 8px var(--verde); animation:latido 1.8s infinite; }
+  @keyframes latido { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  main { max-width:980px; margin:0 auto; padding:20px 18px 8px; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:22px; }
+  .tarjeta {
+    background:linear-gradient(160deg, var(--panel), rgba(13,16,32,.6));
+    border:1px solid var(--borde); border-radius:14px; padding:16px 16px 14px;
+    position:relative; overflow:hidden; transition:border-color .15s, transform .15s;
+  }
+  .tarjeta::before {
+    content:""; position:absolute; inset:0; border-radius:14px; padding:1px;
+    background:linear-gradient(135deg, var(--acento,var(--cian)), transparent 40%);
+    -webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite:xor; mask-composite:exclude; opacity:.5; pointer-events:none;
+  }
+  .tarjeta.c{ --acento:var(--cian) } .tarjeta.m{ --acento:var(--magenta) }
+  .tarjeta.v{ --acento:var(--violeta) } .tarjeta.g{ --acento:var(--verde) }
+  .tarjeta .etiqueta { font-size:10.5px; color:var(--suave); text-transform:uppercase;
+    letter-spacing:.6px; margin-bottom:8px; }
+  .tarjeta .valor { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums;
+    color:var(--texto); text-shadow:0 0 14px color-mix(in srgb, var(--acento) 55%, transparent); }
+  .tarjeta .sub { font-size:11.5px; color:var(--suave); margin-top:4px; }
+  .tarjeta .sub b { color:var(--acento); font-weight:700; }
+
+  .seccion { margin-bottom:26px; }
+  .seccion h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:.6px;
+    color:var(--suave); margin:0 0 12px; font-weight:700; }
+
+  .panelgrafico {
+    background:var(--panel); border:1px solid var(--borde); border-radius:14px;
+    padding:18px 18px 10px; display:flex; align-items:flex-end; gap:10px; height:150px;
+  }
+  .barra-dia { flex:1; display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; justify-content:flex-end; }
+  .barra-dia .cuerpo {
+    width:100%; max-width:34px; border-radius:6px 6px 3px 3px; min-height:3px;
+    background:linear-gradient(180deg, var(--cian), var(--violeta));
+    box-shadow:0 0 12px rgba(0,229,255,.35); transition:height .5s ease;
+  }
+  .barra-dia .num { font-size:11px; color:var(--texto); font-weight:600; }
+  .barra-dia .etq { font-size:10px; color:var(--suave); text-transform:uppercase; }
+
+  .vacio { text-align:center; color:var(--suave); padding:60px 16px; }
+  .error { background:rgba(255,47,90,.12); color:#ff5f7a; padding:12px 14px; border-radius:10px;
+    border:1px solid rgba(255,47,90,.3); }
+</style>
+</head>
+<body>
+<header>
+  <div class="barra">
+    <a class="volver" href="/panel" title="Volver a chats">&larr;</a>
+    <div class="titulos">
+      <h1>FRAN · PANEL DE CONTROL</h1>
+      <p>Pampa Shop — métricas en vivo</p>
+    </div>
+    <span class="vivo"><span class="punto"></span>vivo</span>
+  </div>
+</header>
+<main id="contenido"><p class="vacio">Cargando…</p></main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const contenido = $("contenido");
+const nf = (n) => Number(n || 0).toLocaleString("es-AR");
+const usd = (n) => "US$ " + Number(n || 0).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const escapar = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
+
+async function pedir(ruta) {
+  const r = await fetch(ruta, { credentials: "same-origin" });
+  if (!r.ok) {
+    let detalle = "Error " + r.status;
+    if (r.status === 401) detalle = "Token invalido";
+    else { try { detalle = (await r.json()).detail || detalle; } catch (e) {} }
+    throw new Error(detalle);
+  }
+  return r.json();
+}
+
+function pintar(m) {
+  const totalTokensHoy = m.uso_hoy.tokens_entrada + m.uso_hoy.tokens_salida + m.uso_hoy.tokens_cache;
+  const maxSerie = Math.max(1, ...m.serie_mensajes.map(d => d.mensajes));
+  const diasCortos = ["dom","lun","mar","mié","jue","vie","sáb"];
+
+  contenido.innerHTML = `
+    <div class="seccion">
+      <h2>Mensajes</h2>
+      <div class="grid">
+        <div class="tarjeta c">
+          <div class="etiqueta">Entraron hoy</div>
+          <div class="valor">${nf(m.mensajes.cliente_hoy)}</div>
+          <div class="sub">histórico: <b>${nf(m.mensajes.cliente_total)}</b></div>
+        </div>
+        <div class="tarjeta v">
+          <div class="etiqueta">Respuestas del bot hoy</div>
+          <div class="valor">${nf(m.mensajes.bot_hoy)}</div>
+          <div class="sub">histórico: <b>${nf(m.mensajes.bot_total)}</b></div>
+        </div>
+        <div class="tarjeta m">
+          <div class="etiqueta">Escalados a humano</div>
+          <div class="valor">${nf(m.escalados.activos)}</div>
+          <div class="sub">avisados hoy: <b>${nf(m.escalados.hoy)}</b></div>
+        </div>
+        <div class="tarjeta g">
+          <div class="etiqueta">Leads</div>
+          <div class="valor">${nf(m.leads.total)}</div>
+          <div class="sub">nuevos hoy: <b>${nf(m.leads.hoy)}</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="seccion">
+      <h2>Consumo de Claude (estimado)</h2>
+      <div class="grid">
+        <div class="tarjeta c">
+          <div class="etiqueta">Tokens hoy</div>
+          <div class="valor">${nf(totalTokensHoy)}</div>
+          <div class="sub">${nf(m.uso_hoy.tokens_entrada)} in · ${nf(m.uso_hoy.tokens_salida)} out · ${nf(m.uso_hoy.tokens_cache)} cache</div>
+        </div>
+        <div class="tarjeta v">
+          <div class="etiqueta">Costo hoy</div>
+          <div class="valor">${usd(m.uso_hoy.costo_usd)}</div>
+          <div class="sub">${nf(m.uso_hoy.respuestas)} respuestas con IA</div>
+        </div>
+        <div class="tarjeta m">
+          <div class="etiqueta">Costo histórico</div>
+          <div class="valor">${usd(m.uso_total.costo_usd)}</div>
+          <div class="sub">${nf(m.uso_total.respuestas)} respuestas con IA</div>
+        </div>
+        <div class="tarjeta g">
+          <div class="etiqueta">Tokens histórico</div>
+          <div class="valor">${nf(m.uso_total.tokens_entrada + m.uso_total.tokens_salida + m.uso_total.tokens_cache)}</div>
+          <div class="sub">${nf(m.uso_total.tokens_cache)} servidos desde cache</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="seccion">
+      <h2>Mensajes entrantes — últimos ${m.serie_mensajes.length} días</h2>
+      <div class="panelgrafico">
+        ${m.serie_mensajes.map(d => {
+          const alto = Math.round((d.mensajes / maxSerie) * 100);
+          const fecha = new Date(d.dia + "T00:00:00");
+          return `<div class="barra-dia">
+            <span class="num">${d.mensajes}</span>
+            <div class="cuerpo" style="height:${Math.max(alto, 3)}%"></div>
+            <span class="etq">${diasCortos[fecha.getDay()]}</span>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function refrescar() {
+  try {
+    pintar(await pedir("/panel/datos/metricas"));
+  } catch (e) {
+    contenido.innerHTML = '<p class="error">' + escapar(e.message) + "</p>";
+  }
+}
+
+setInterval(refrescar, 15000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refrescar(); });
 refrescar();
 </script>
