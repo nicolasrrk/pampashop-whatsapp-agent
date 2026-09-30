@@ -26,7 +26,12 @@ import yaml
 from dotenv import load_dotenv
 
 from agent.escalacion import escalar_desde_agente
-from agent.tools import buscar_productos_tienda_nube, consultar_pedido, obtener_detalle_producto
+from agent.tools import (
+    buscar_productos_tienda_nube,
+    consultar_guia_talles,
+    consultar_pedido,
+    obtener_detalle_producto,
+)
 
 load_dotenv()
 logger = logging.getLogger("agentkit")
@@ -151,6 +156,30 @@ TOOLS = [
         },
     },
     {
+        "name": "consultar_guia_talles",
+        "description": (
+            "Tabla de equivalencia de talles de una marca (Argentina, Brasil cuando "
+            "aplica, y el largo del pie en centimetros para cada numero). Usala "
+            "SIEMPRE que el cliente pregunte por talles de forma general: que talle "
+            "le corresponde segun la medida de su pie, la diferencia entre el talle "
+            "argentino y el brasilero de una marca, o si dude entre dos numeros. "
+            "Esto es DISTINTO de preguntar si HAY STOCK de un talle puntual de un "
+            "producto — para eso segui usando obtener_detalle_producto. Si el "
+            "cliente no dijo la marca, primero pedisela o inferila del producto que "
+            "esten viendo en la conversacion; no llames a esta herramienta sin marca."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "marca": {
+                    "type": "string",
+                    "description": "Marca del calzado (ej: Vizzano, Moleca, Piccadilly, Kidy).",
+                }
+            },
+            "required": ["marca"],
+        },
+    },
+    {
         "name": "escalar_a_humano",
         "description": (
             "Avisa a una persona del equipo AHORA de que este cliente necesita ayuda "
@@ -183,12 +212,13 @@ TOOLS = [
 ]
 
 # Mapa nombre de herramienta -> funcion async que la implementa (todas en agent/tools.py).
-# "escalar_a_humano" NO esta aca a proposito: a diferencia de estas tres (solo lectura,
+# "escalar_a_humano" NO esta aca a proposito: a diferencia de estas (solo lectura,
 # no necesitan saber quien pregunta), esa herramienta tiene que marcar al CLIENTE REAL
 # como escalado, y el telefono no puede salir de lo que diga el modelo — sale del
 # backend. Se maneja aparte, en el propio loop de generar_respuesta.
 _HERRAMIENTAS = {
     "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"]),
+    "consultar_guia_talles": lambda i: consultar_guia_talles(i["marca"]),
     "obtener_detalle_producto": lambda i: obtener_detalle_producto(i["product_id"]),
     "consultar_pedido": lambda i: consultar_pedido(i["numero_pedido"]),
 }

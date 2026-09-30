@@ -302,3 +302,205 @@ def cargar_info_negocio() -> dict:
     except FileNotFoundError:
         logger.error("config/business.yaml no encontrado")
         return {}
+
+
+# ── Guia de talles ───────────────────────────────────────────────────────────
+# Copia estatica de https://www.pampashop.com.ar/guia-de-talles/ (equivalencia de
+# talles por marca, con el largo del pie en cm). No hay una API para esto -- es una
+# pagina de contenido fijo, no un endpoint de Tienda Nube -- asi que se transcribe
+# una vez aca en vez de scrapear la web en cada consulta. Si la tienda actualiza esa
+# pagina, esta tabla hay que actualizarla a mano.
+#
+# Cada fila es (talla_bra, talla_arg, talla_cm) o (talla_arg, talla_cm) para las
+# marcas que en la pagina no traen columna de Brasil.
+GUIA_TALLES: dict[str, list[tuple]] = {
+    "Barker": [(35, 22.5), (36, 23), (37, 24), (38, 24.5), (39, 25.5), (40, 26)],
+    "Beira Rio": [
+        (34, 35, 22.5), (35, 36, 23), (36, 37, 23.5), (37, 38, 24.5),
+        (38, 39, 25), (39, 40, 26), (40, 41, 27),
+    ],
+    "Bestseller": [(36, 23), (37, 23.5), (38, 24.5), (39, 25.5), (40, 26)],
+    "Bibi": [
+        (14, 15, 9.5), (15, 16, 10.3), (16, 17, 11), (17, 18, 11.5), (18, 19, 12.3),
+        (19, 20, 12.8), (20, 21, 13.3), (21, 22, 14), (22, 23, 14.5), (23, 24, 15),
+        (24, 25, 15.5), (25, 26, 16), (26, 27, 17), (27, 28, 17.8), (28, 29, 18.5),
+        (29, 30, 19), (30, 31, 20), (31, 32, 21), (32, 33, 21.5), (33, 34, 22),
+        (34, 35, 22.5), (35, 36, 23.5), (36, 37, 24), (37, 38, 25),
+    ],
+    "Blue Duck": [
+        (20, 13), (21, 14), (22, 15), (23, 15.5), (24, 16), (25, 17), (26, 17.5),
+        (27, 18), (28, 18.5), (29, 19), (30, 20), (31, 20.5), (32, 21), (33, 21.5),
+        (34, 22), (35, 22.5), (36, 23.5),
+    ],
+    "Br Sport": [
+        (38, 39, 25.5), (39, 40, 26), (40, 41, 27), (41, 42, 27.5), (42, 43, 28),
+        (43, 44, 29), (44, 45, 29.5),
+    ],
+    "Chocolate": [
+        (34, 35, 21.5), (35, 36, 22.0), (36, 37, 23.0), (37, 38, 24.0),
+        (38, 39, 25.0), (39, 40, 25.5), (40, 41, 26.5),
+    ],
+    "Dakota": [(36, 23.5), (37, 24), (38, 25), (39, 25.5), (40, 26)],
+    "Dino Park": [
+        (25, 15.5), (26, 16.4), (27, 17), (28, 17.5), (29, 18.5), (30, 19),
+        (31, 19.5), (32, 20), (33, 21), (34, 21.5),
+    ],
+    "Fausto Milano": [(39, 25), (40, 26), (41, 27), (42, 28), (43, 29), (44, 30), (45, 31)],
+    "Ferli (Zapatillas)": [
+        (27, 18.5), (28, 19), (29, 19.5), (30, 20), (31, 21), (32, 21.5),
+        (33, 22.5), (34, 23), (35, 23.5), (36, 24), (37, 25), (38, 25.5),
+    ],
+    "Freeway": [
+        (40, 26), (41, 27), (42, 27.5), (43, 28.5), (44, 29), (45, 30),
+        (46, 31), (47, 32), (48, 33),
+    ],
+    "Hopper (Zapato)": [
+        (30, 19), (31, 20), (32, 20.5), (33, 21), (34, 21.5), (35, 22),
+        (36, 23), (37, 23.5), (38, 24),
+    ],
+    "Ipanema Hombre": [(39, 25), (40, 26), (41, 26.5), (43, 27.5), (45, 29), (47, 30)],
+    "Ipanema Mujer": [(35, 22.5), (36, 23), (37, 24), (38, 25), (39, 26), (40, 26.5)],
+    "Karen Klier": [(36, 23.5), (37, 24), (38, 25), (39, 25.5), (40, 26)],
+    "Kidy": [
+        (18, 11.3), (19, 12), (20, 12.7), (21, 13.3), (22, 14), (23, 14.7),
+        (24, 15.3), (25, 16), (26, 16.7), (27, 17.3), (28, 18), (29, 18.7),
+        (30, 19.3), (31, 20), (32, 20.7), (33, 21.7), (34, 22), (35, 22.7),
+        (36, 23.3), (37, 24),
+    ],
+    "Lady Stork": [(35, 23.5), (36, 24), (37, 24.5), (38, 25), (39, 25.5), (40, 26), (41, 27)],
+    "Madero": [(35, 22.5), (36, 23), (37, 23.5), (38, 24), (39, 25), (40, 25.5)],
+    "Marcel": [
+        (20, 12), (21, 12.6), (22, 13.2), (23, 13.8), (24, 14.3), (27, 17.5),
+        (28, 18), (29, 19), (30, 19.5), (31, 20.2), (32, 21), (33, 21.4),
+        (34, 22.2), (35, 23), (36, 23.5), (37, 24.2), (38, 25),
+    ],
+    "Pegada Hombre": [
+        (39, 25.5), (40, 26.5), (41, 27.5), (42, 28.5), (43, 29), (44, 29.5),
+        (45, 30), (46, 31), (47, 32), (48, 32.5), (49, 33),
+    ],
+    "Modare Ultraconforto": [
+        (34, 35, 22.5), (35, 36, 23), (36, 37, 23.5), (37, 38, 24.5),
+        (38, 39, 25), (39, 40, 26), (40, 41, 27),
+    ],
+    "Moleca": [
+        (34, 35, 22.5), (35, 36, 23), (36, 37, 23.5), (37, 38, 24.5),
+        (38, 39, 25), (39, 40, 26), (40, 41, 27),
+    ],
+    "Molekinha": [
+        (17, 18, 11.7), (18, 19, 12.5), (19, 20, 13), (20, 21, 13.8), (21, 22, 14.5),
+        (22, 23, 14.8), (23, 24, 15.5), (24, 25, 16.3), (25, 26, 17), (26, 27, 18),
+        (27, 28, 19), (28, 29, 19.5), (29, 30, 20), (30, 31, 20.6), (31, 32, 21.5),
+        (32, 33, 22), (33, 34, 22.7), (34, 35, 23.02), (35, 36, 24), (36, 37, 25),
+    ],
+    "Molekinho": [
+        (17, 18, 11.7), (18, 19, 12.5), (19, 20, 13), (20, 21, 13.8), (21, 22, 14.5),
+        (22, 23, 14.9), (23, 24, 15.5), (24, 25, 16.3), (25, 26, 17), (26, 27, 18),
+        (27, 28, 19), (28, 29, 19.5), (29, 30, 20), (30, 31, 20.6), (31, 32, 21.5),
+        (32, 33, 22), (33, 34, 22.7), (34, 35, 23.02), (35, 36, 24), (36, 37, 25),
+    ],
+    "Morris": [(39, 26), (40, 26.5), (41, 27), (42, 28), (43, 28.5), (44, 29)],
+    "Olympikus": [
+        (36, 23.3), (37, 24), (38, 24.7), (39, 25.3), (40, 26), (41, 26.7),
+        (42, 27.3), (43, 28), (44, 28.7), (45, 29.3),
+    ],
+    "Pegada Mujer": [(35, 22), (36, 22.5), (37, 23), (38, 24), (39, 24.5), (40, 25)],
+    "Piccadilly": [
+        (34, 35, 23), (35, 36, 23.5), (36, 37, 24), (37, 38, 25),
+        (38, 39, 25.7), (39, 40, 26.7), (40, 41, 27.3),
+    ],
+    "Replay Hombre": [(39, 25), (40, 26), (41, 27), (42, 24.5), (43, 28), (44, 28.5), (45, 29)],
+    "Replay Mujer": [(36, 23.5), (37, 24), (38, 24.5), (39, 25), (40, 26)],
+    "Riot": [(35, 23.5), (36, 24), (37, 24.5), (38, 25), (39, 25.5), (40, 26.5)],
+    "Savage": [(35, 23), (36, 23.5), (37, 24), (38, 24.5), (39, 25.5), (40, 26)],
+    "Scarpino": [(39, 26), (40, 26.5), (41, 27.5), (42, 28.5), (43, 29), (44, 30)],
+    "Soft": [
+        (27, 17.5), (28, 18), (29, 19), (30, 19.5), (31, 20), (32, 20.5),
+        (33, 21), (34, 22), (35, 22.5), (36, 23.5), (37, 24), (38, 24.5),
+        (39, 25), (40, 25.5), (41, 26),
+    ],
+    "Sergio Tacchini Dama": [(35, 23.5), (36, 24), (37, 24.5), (38, 25), (39, 26), (40, 27)],
+    "Ramarin": [(35, 23), (36, 24), (37, 24.5), (38, 25), (39, 25.5), (40, 26.5)],
+    "Via Marte": [(35, 23), (36, 23.5), (37, 24), (38, 25), (39, 25.5), (40, 26)],
+    "Vizzano": [
+        (34, 35, 22.5), (35, 36, 23), (36, 37, 23.5), (37, 38, 24.5),
+        (38, 39, 25), (39, 40, 26), (40, 41, 27),
+    ],
+    "Vizzia": [(35, 22.5), (36, 23.5), (37, 24), (38, 25), (39, 25.5), (40, 26.5)],
+    "West Coast": [
+        (39, 26), (40, 27), (41, 27.5), (42, 28.5), (43, 29.5), (44, 30.5), (45, 31),
+    ],
+    "Tres Corazones": [
+        (35, 23), (36, 23.5), (37, 24), (38, 25), (39, 25.5), (40, 26), (41, 26.5),
+    ],
+    "Verenna": [(35, 22), (36, 22.4), (37, 23), (38, 23.4), (39, 24.3), (40, 24.7)],
+    "Tookey": [
+        (21, 14), (22, 14.5), (23, 15), (24, 15.5), (25, 16.5), (26, 17), (27, 18),
+        (28, 18.5), (29, 19), (30, 20), (31, 20.5), (32, 21.5), (33, 22), (34, 22.5),
+        (35, 23), (36, 24), (37, 24.5), (38, 24.7), (39, 25.3), (40, 26),
+    ],
+}
+
+
+def _normalizar(texto: str) -> str:
+    """Minusculas y sin acentos, para que 'Piccadilly' matchee con 'picadilly' o 'PICCADILLY'."""
+    import unicodedata
+
+    sin_acentos = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    return sin_acentos.lower().strip()
+
+
+def _nombre_base(nombre_marca: str) -> str:
+    """
+    "Ipanema Hombre" y "Ipanema Mujer" -> "ipanema". Sirve para que un cliente que
+    pregunta solo "ipanema" (sin aclarar genero) encuentre las dos variantes, y para
+    armar la lista de marcas disponibles sin duplicados ni sufijos de genero.
+    """
+    import re
+
+    base = re.sub(r"\(.*?\)", "", _normalizar(nombre_marca)).strip()
+    for sufijo in (" hombre", " mujer", " dama"):
+        if base.endswith(sufijo):
+            base = base[: -len(sufijo)]
+    return base.strip()
+
+
+def _marcas_candidatas(consulta: str) -> list[str]:
+    """Busca la marca pedida entre las claves de GUIA_TALLES, por nombre base o substring."""
+    q = _normalizar(consulta)
+    q_base = _nombre_base(consulta)
+
+    exactas = [k for k in GUIA_TALLES if _nombre_base(k) == q_base]
+    if exactas:
+        return exactas
+
+    return [k for k in GUIA_TALLES if q in _nombre_base(k) or _nombre_base(k) in q]
+
+
+async def consultar_guia_talles(marca: str) -> str:
+    """
+    Tabla de equivalencia de talles de una marca puntual, con el largo del pie en
+    centimetros para cada numero (y el talle de Brasil, cuando la marca lo usa).
+    Datos fijos, transcriptos de la guia de talles publicada en la web de la tienda
+    (no vienen de Tienda Nube: es contenido de una pagina, no de un producto).
+    """
+    candidatos = _marcas_candidatas(marca)
+    if not candidatos:
+        disponibles = sorted({_nombre_base(k).title() for k in GUIA_TALLES})
+        return (
+            f"No tengo guia de talles especifica para '{marca}'. "
+            f"Marcas con guia disponible: {', '.join(disponibles)}."
+        )
+
+    partes = []
+    for nombre in candidatos:
+        lineas = []
+        for fila in GUIA_TALLES[nombre]:
+            if len(fila) == 3:
+                bra, arg, cm = fila
+                lineas.append(f"talle BRA {bra} / ARG {arg} = {cm} cm de pie")
+            else:
+                arg, cm = fila
+                lineas.append(f"talle ARG {arg} = {cm} cm de pie")
+        partes.append(f"Guia de talles {nombre}:\n" + "\n".join(lineas))
+
+    return "\n\n".join(partes)
