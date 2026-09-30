@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from agent.memory import (
+    alternar_bot,
     guardar_mensaje,
     listar_borradores_pendientes,
     listar_leads,
@@ -69,6 +70,7 @@ async def datos_leads(request: Request, limite: int = Query(50, ge=1, le=200)):
             "ultimo_mensaje": lead.ultimo_mensaje,
             "veces_contactado": lead.veces_contactado,
             "escalado": lead.escalado,
+            "bot_activo": lead.bot_activo,
             "actualizado_en": lead.actualizado_en.isoformat() if lead.actualizado_en else None,
         }
         for lead in leads
@@ -161,6 +163,53 @@ async def accion_borrador(
     return {"ok": True, "estado": "enviado"}
 
 
+@router.post("/accion/bot/{telefono}")
+async def accion_bot(telefono: str, request: Request, cuerpo: dict = Body(default={})):
+    """
+    Prende o apaga a Fran para UN numero puntual (toggle "bot activo" del panel).
+
+    Con el bot apagado, main.py deja de generarle respuestas automaticas a ese numero
+    -- el mensaje del cliente se sigue guardando y viendo en el panel, pero contestarlo
+    pasa a ser trabajo de una persona, con /accion/responder.
+    """
+    _verificar(request)
+    activo = cuerpo.get("activo")
+    if not isinstance(activo, bool):
+        raise HTTPException(status_code=400, detail="Falta 'activo' (true/false)")
+
+    ok = await alternar_bot(telefono, activo)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Ese telefono no tiene conversacion registrada")
+
+    logger.info(f"{telefono}: bot {'activado' if activo else 'desactivado'} desde el panel")
+    return {"ok": True, "bot_activo": activo}
+
+
+@router.post("/accion/responder/{telefono}")
+async def accion_responder(telefono: str, request: Request, cuerpo: dict = Body(default={})):
+    """
+    Manda un mensaje escrito a mano por una persona del equipo, directo por WhatsApp.
+
+    A diferencia de un borrador (que es la respuesta que REDACTO Fran, pendiente de
+    aprobacion), esto es texto que tipeo una persona: sale apenas se confirma, sin pasar
+    por MODO_ENVIO=borrador -- ya es, en si mismo, la aprobacion humana.
+    """
+    _verificar(request)
+    texto = (cuerpo.get("texto") or "").strip()
+    if not texto:
+        raise HTTPException(status_code=400, detail="Falta 'texto'")
+
+    from agent.providers import obtener_proveedor
+
+    enviado = await obtener_proveedor().enviar_mensaje(telefono, texto)
+    if not enviado:
+        raise HTTPException(status_code=502, detail="No se pudo enviar el mensaje")
+
+    await guardar_mensaje(telefono, "assistant", texto, remitente="humano")
+    logger.info(f"Mensaje manual enviado a {telefono} desde el panel")
+    return {"ok": True}
+
+
 # ── Pagina ───────────────────────────────────────────────────────────────────
 
 
@@ -195,14 +244,14 @@ PAGINA = """<!doctype html>
 <style>
   :root {
     --fondo:#f0f2f5; --panel:#fff; --borde:#e4e6eb; --texto:#111b21; --suave:#667781;
-    --cliente:#fff; --agente:#d9fdd3; --acento:#128c7e; --acento2:#25d366;
+    --cliente:#fff; --agente:#d9fdd3; --humano:#cfe4ff; --acento:#128c7e; --acento2:#25d366;
     --alerta:#b42318; --alerta-bg:#fef3f2; --ambar:#8a5a00; --ambar-bg:#fff8e6;
     --sombra:0 1px 2px rgba(0,0,0,.08);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --fondo:#0b141a; --panel:#111b21; --borde:#222d34; --texto:#e9edef; --suave:#8696a0;
-      --cliente:#202c33; --agente:#005c4b; --acento:#00a884; --acento2:#00a884;
+      --cliente:#202c33; --agente:#005c4b; --humano:#1f3a5c; --acento:#00a884; --acento2:#00a884;
       --alerta:#ff8a80; --alerta-bg:#2a1614; --ambar:#ffc94d; --ambar-bg:#2a2314;
       --sombra:0 1px 2px rgba(0,0,0,.3);
     }
@@ -255,14 +304,40 @@ PAGINA = """<!doctype html>
   .cuando { color:var(--suave); font-size:11.5px; white-space:nowrap; align-self:flex-start; }
   .etiqueta { font-size:10.5px; padding:2px 7px; border-radius:10px; font-weight:700;
     background:var(--alerta-bg); color:var(--alerta); text-transform:uppercase; letter-spacing:.4px; }
+  .etiqueta.manual { background:var(--ambar-bg); color:var(--ambar); margin-left:4px; }
 
   .burbuja { max-width:80%; padding:8px 11px; border-radius:9px; margin-bottom:9px;
     white-space:pre-wrap; word-wrap:break-word; box-shadow:var(--sombra); }
   .de-cliente { background:var(--cliente); margin-right:auto; border-top-left-radius:2px; }
   .de-agente { background:var(--agente); margin-left:auto; border-top-right-radius:2px; }
+  .de-humano { background:var(--humano); margin-left:auto; border-top-right-radius:2px; }
+  .remitente-label { display:block; font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.4px; opacity:.65; margin-bottom:3px; }
   .hora { font-size:10.5px; color:var(--suave); display:block; margin-top:3px; text-align:right; }
   .nuevo { animation:entra .3s ease-out; }
   @keyframes entra { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
+
+  .controlbot { display:none; align-items:center; gap:9px; padding:8px 16px;
+    background:rgba(0,0,0,.12); font-size:13px; color:#fff; }
+  .switch { position:relative; display:inline-block; width:38px; height:22px; flex-shrink:0; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; cursor:pointer; inset:0; background:rgba(255,255,255,.35);
+    transition:.2s; border-radius:22px; }
+  .slider:before { content:""; position:absolute; height:16px; width:16px; left:3px; bottom:3px;
+    background:#fff; transition:.2s; border-radius:50%; }
+  .switch input:checked + .slider { background:#fff; }
+  .switch input:checked + .slider:before { transform:translateX(16px); background:var(--acento); }
+
+  body.con-caja { padding-bottom:78px; }
+  .caja-responder { display:none; position:fixed; left:0; right:0; bottom:0; z-index:20;
+    background:var(--panel); border-top:1px solid var(--borde); gap:8px; align-items:flex-end;
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .caja-responder textarea { flex:1; border:1px solid var(--borde); border-radius:18px;
+    padding:9px 14px; font:inherit; font-size:14px; resize:none; min-height:20px; max-height:100px;
+    background:var(--fondo); color:var(--texto); }
+  .caja-responder button { background:var(--acento2); color:#fff; border:0; border-radius:18px;
+    padding:9px 18px; font-weight:600; cursor:pointer; font-family:inherit; flex-shrink:0; }
+  .caja-responder button:disabled { opacity:.5; cursor:default; }
 
   .tarjeta { background:var(--panel); border-radius:12px; padding:15px; margin-bottom:12px; box-shadow:var(--sombra); }
   .tarjeta .de { font-size:12px; color:var(--suave); margin-bottom:9px; }
@@ -302,17 +377,31 @@ PAGINA = """<!doctype html>
     <button data-vista="chats" class="activa">CHATS</button>
     <button data-vista="borradores">POR APROBAR<span class="globo" id="globo" style="display:none">0</span></button>
   </nav>
+  <div class="controlbot" id="controlBot">
+    <label class="switch">
+      <input type="checkbox" id="switchBot">
+      <span class="slider"></span>
+    </label>
+    <span id="estadoBot">Bot activo</span>
+  </div>
 </header>
 <main id="contenido"><p class="vacio">Cargando…</p></main>
+<div class="caja-responder" id="cajaResponder">
+  <textarea id="textoResponder" placeholder="Escribir como humano…" rows="1"></textarea>
+  <button id="btnResponder" onclick="enviarManual()">Enviar</button>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const contenido = $("contenido"), titulo = $("titulo"), contador = $("contador");
 const volver = $("volver"), punto = $("punto"), globo = $("globo"), nav = $("nav");
+const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("estadoBot");
+const cajaResponder = $("cajaResponder"), textoResponder = $("textoResponder"), btnResponder = $("btnResponder");
 
 let vista = "chats";        // chats | borradores | conversacion
 let telActual = null;
 let ultimaFirma = "";       // para no repintar (y no perder el scroll) si nada cambio
+let leadsPorTelefono = {};  // cache de la ultima lista de leads, para leer bot_activo al abrir un chat
 
 const escapar = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
 const iniciales = (tel) => String(tel).slice(-2);
@@ -348,29 +437,43 @@ async function pedir(ruta, opciones) {
 // ── Pintado ────────────────────────────────────────────────────────────────
 
 function pintarChats(leads) {
+  leadsPorTelefono = {};
+  leads.forEach(l => { leadsPorTelefono[l.telefono] = l; });
+
   contador.textContent = leads.length + (leads.length === 1 ? " chat" : " chats");
   if (!leads.length) {
     contenido.innerHTML = '<p class="vacio"><span class="icono">&#128172;</span>Todavia no escribio nadie.</p>';
     return;
   }
-  // Los que pidieron una persona van arriba: son los que estan esperando.
-  const orden = leads.slice().sort((a, b) => (b.escalado === true) - (a.escalado === true));
+  // Los que necesitan atencion (esperan una persona, o ya la tienen atendiendo a
+  // mano) van arriba.
+  const necesitaAtencion = (l) => l.escalado || !l.bot_activo;
+  const orden = leads.slice().sort((a, b) => necesitaAtencion(b) - necesitaAtencion(a));
   contenido.innerHTML = orden.map(l => `
-    <div class="chat ${l.escalado ? "espera" : ""}" onclick="abrirChat('${escapar(l.telefono)}')">
+    <div class="chat ${necesitaAtencion(l) ? "espera" : ""}" onclick="abrirChat('${escapar(l.telefono)}')">
       <div class="avatar">${escapar(iniciales(l.telefono))}</div>
       <div class="medio">
-        <div class="tel">${escapar(l.telefono)} ${l.escalado ? '<span class="etiqueta">espera persona</span>' : ""}</div>
+        <div class="tel">${escapar(l.telefono)}
+          ${l.escalado ? '<span class="etiqueta">espera persona</span>' : ""}
+          ${!l.bot_activo ? '<span class="etiqueta manual">modo manual</span>' : ""}
+        </div>
         <div class="ultimo">${escapar(l.ultimo_mensaje)}</div>
       </div>
       <span class="cuando">${fecha(l.actualizado_en)}</span>
     </div>`).join("");
 }
 
+function claseBurbuja(m) {
+  if (m.remitente === "humano") return "de-humano";
+  return m.role === "user" ? "de-cliente" : "de-agente";
+}
+
 function pintarConversacion(msgs, alFinal) {
   contador.textContent = msgs.length + " mensajes";
   contenido.innerHTML = msgs.length
     ? msgs.map((m, i) => `
-        <div class="burbuja ${m.role === "user" ? "de-cliente" : "de-agente"} ${alFinal && i >= msgs.length - 1 ? "nuevo" : ""}">
+        <div class="burbuja ${claseBurbuja(m)} ${alFinal && i >= msgs.length - 1 ? "nuevo" : ""}">
+          ${m.remitente === "humano" ? '<span class="remitente-label">Equipo</span>' : ""}
           ${escapar(m.content)}<span class="hora">${fecha(m.timestamp)}</span>
         </div>`).join("")
     : '<p class="vacio">Sin mensajes guardados.</p>';
@@ -417,11 +520,21 @@ async function resolver(id, accion) {
   }
 }
 
+function actualizarControlBot(activo) {
+  switchBot.checked = activo;
+  estadoBot.textContent = activo ? "Bot activo" : "Modo manual";
+}
+
 function abrirChat(telefono) {
   vista = "conversacion"; telActual = telefono; ultimaFirma = "";
   volver.style.display = "block";
   nav.style.display = "none";
   titulo.textContent = telefono;
+  controlBot.style.display = "flex";
+  cajaResponder.style.display = "flex";
+  document.body.classList.add("con-caja");
+  const lead = leadsPorTelefono[telefono];
+  actualizarControlBot(lead ? lead.bot_activo !== false : true);
   refrescar(true);
 }
 
@@ -429,9 +542,62 @@ volver.onclick = () => {
   vista = "chats"; telActual = null; ultimaFirma = "";
   volver.style.display = "none";
   nav.style.display = "flex";
+  controlBot.style.display = "none";
+  cajaResponder.style.display = "none";
+  document.body.classList.remove("con-caja");
   titulo.textContent = "Fran";
   refrescar();
 };
+
+switchBot.onchange = async () => {
+  const activo = switchBot.checked;
+  switchBot.disabled = true;
+  try {
+    await pedir("/panel/accion/bot/" + encodeURIComponent(telActual), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activo }),
+    });
+    actualizarControlBot(activo);
+    if (leadsPorTelefono[telActual]) leadsPorTelefono[telActual].bot_activo = activo;
+    aviso(activo ? "Fran vuelve a responder este chat" : "Fran ya no responde este chat");
+  } catch (e) {
+    switchBot.checked = !activo; // revierte el visual si fallo
+    aviso(e.message);
+  } finally {
+    switchBot.disabled = false;
+  }
+};
+
+function ajustarAlturaTextarea() {
+  textoResponder.style.height = "auto";
+  textoResponder.style.height = Math.min(textoResponder.scrollHeight, 100) + "px";
+}
+textoResponder.addEventListener("input", ajustarAlturaTextarea);
+textoResponder.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviarManual(); }
+});
+
+async function enviarManual() {
+  const texto = textoResponder.value.trim();
+  if (!texto || !telActual) return;
+  btnResponder.disabled = true;
+  try {
+    await pedir("/panel/accion/responder/" + encodeURIComponent(telActual), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto }),
+    });
+    textoResponder.value = "";
+    ajustarAlturaTextarea();
+    ultimaFirma = "";
+    refrescar(true);
+  } catch (e) {
+    aviso(e.message);
+  } finally {
+    btnResponder.disabled = false;
+  }
+}
 
 nav.onclick = (e) => {
   const boton = e.target.closest("button[data-vista]");
@@ -471,7 +637,7 @@ async function refrescar(forzarAbajo) {
         pedir("/panel/datos/borradores").catch(() => []),
       ]);
       globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
-      const firma = JSON.stringify(leads.map(l => l.telefono + l.actualizado_en + l.escalado));
+      const firma = JSON.stringify(leads.map(l => l.telefono + l.actualizado_en + l.escalado + l.bot_activo));
       if (firma !== ultimaFirma) { pintarChats(leads); ultimaFirma = firma; }
     }
   } catch (e) {

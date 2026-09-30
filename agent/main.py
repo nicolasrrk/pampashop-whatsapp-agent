@@ -228,6 +228,16 @@ async def procesar_mensaje(msg: MensajeEntrante):
             if lead.veces_contactado == 1:
                 await _enviar_bienvenida(msg)
 
+            # Alguien del equipo tomo esta conversacion a mano desde el panel
+            # (bot_activo=False): el mensaje del cliente se guarda igual, para que se
+            # vea en el panel, pero no se genera NINGUNA respuesta automatica ni aviso
+            # de escalacion -- eso ahora lo maneja una persona, no Fran. Distinto de
+            # "escalado": ver el comentario en agent/memory.py (clase Lead).
+            if not lead.bot_activo:
+                await guardar_mensaje(msg.telefono, "user", msg.texto, remitente="cliente")
+                logger.info(f"{msg.telefono}: bot desactivado a mano, se guarda sin responder")
+                return
+
             # Escalar ya NO apaga al bot. Antes, apenas se marcaba una conversacion,
             # el agente dejaba de contestar por completo (o, en el intento anterior de
             # arreglar esto, contestaba solo un mensaje fijo de "ya te van a

@@ -59,9 +59,16 @@ class Mensaje(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     telefono: Mapped[str] = mapped_column(String(50), index=True)
-    role: Mapped[str] = mapped_column(String(20))  # "user" o "assistant"
+    role: Mapped[str] = mapped_column(String(20))  # "user" o "assistant" (lo que ve la API de Claude)
     content: Mapped[str] = mapped_column(Text)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+    # Quien REDACTO el mensaje, para el panel: "cliente" | "bot" | "humano". Distinto de
+    # "role": un mensaje "humano" (alguien del equipo respondiendo a mano desde el panel)
+    # sigue siendo role="assistant" para la API de Claude, pero remitente="humano" para
+    # que el panel lo pinte distinto de una respuesta de Fran. Nullable porque los
+    # mensajes guardados ANTES de este campo no lo tienen: para esos, el panel infiere
+    # "cliente"/"bot" a partir de "role" (ver obtener_conversacion_completa).
+    remitente: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
 
 
 class EventoProcesado(Base):
@@ -93,6 +100,14 @@ class Lead(Base):
     ultimo_mensaje: Mapped[str] = mapped_column(Text)
     veces_contactado: Mapped[int] = mapped_column(Integer, default=1)
     escalado: Mapped[bool] = mapped_column(default=False)
+    # Distinto de "escalado": escalado es un AVISO (el bot le pidio a una persona que
+    # se sume, pero Fran sigue contestando). "bot_activo" es un APAGADOR manual: alguien
+    # del equipo lo pone en False desde el panel cuando quiere atender ese numero en
+    # persona, y ahi si el bot deja de responder ese numero hasta que lo reactiven. Son
+    # dos cosas ortogonales: puede estar escalado y con el bot activo (avisaron a una
+    # persona pero Fran sigue mientras tanto), o con el bot apagado sin estar escalado
+    # (alguien tomo la charla directamente, sin pasar por el flujo de escalacion).
+    bot_activo: Mapped[bool] = mapped_column(default=True)
     # Cuando se mando el ultimo aviso interno por este telefono (no cuando se marco
     # escalado por primera vez: son la misma columna porque hoy se actualizan siempre
     # juntas). Sirve para decidir si conviene volver a avisar — ver
@@ -147,22 +162,40 @@ class Borrador(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
+# Columnas agregadas a tablas que ya existian de deploys anteriores. Cada entrada:
+# (tabla, columna, tipo SQL, "DEFAULT ..." o "" si no hace falta). El default en la
+# propia sentencia ALTER hace que las filas VIEJAS tambien queden con un valor valido
+# (ej. leads.bot_activo=true), no solo las nuevas -- eso es lo que create_all() no
+# puede hacer por una tabla que ya existia.
+_COLUMNAS_NUEVAS = [
+    ("leads", "ultimo_aviso_escalado", {"postgresql": "TIMESTAMP WITH TIME ZONE", "*": "TIMESTAMP"}, ""),
+    ("leads", "bot_activo", {"postgresql": "BOOLEAN", "*": "BOOLEAN"}, "DEFAULT TRUE"),
+    ("mensajes", "remitente", {"postgresql": "VARCHAR(20)", "*": "VARCHAR(20)"}, ""),
+]
+
+
 def _migrar_columnas_nuevas(conn):
     """
     create_all() solo crea tablas que faltan: NO agrega columnas nuevas a una tabla que
     ya existia de un deploy anterior. Sin esto, agregar un campo a un modelo (como
-    "ultimo_aviso_escalado" en Lead) rompe en produccion con un error de "columna no
-    existe" en la primera consulta que la use, contra una base que ya tenia la tabla
-    "leads" de antes.
+    "ultimo_aviso_escalado" en Lead, en su momento) rompe en produccion con un error de
+    "columna no existe" en la primera consulta que la use, contra una base que ya tenia
+    esa tabla de antes.
     """
     inspector = inspect(conn)
-    if "leads" not in inspector.get_table_names():
-        return  # tabla recien creada por create_all(): ya tiene todas las columnas
-    columnas = {c["name"] for c in inspector.get_columns("leads")}
-    if "ultimo_aviso_escalado" not in columnas:
-        tipo = "TIMESTAMP WITH TIME ZONE" if conn.dialect.name == "postgresql" else "TIMESTAMP"
-        conn.execute(text(f"ALTER TABLE leads ADD COLUMN ultimo_aviso_escalado {tipo}"))
-        logger.info("Migracion: agregada la columna leads.ultimo_aviso_escalado")
+    tablas_existentes = set(inspector.get_table_names())
+    columnas_por_tabla: dict[str, set[str]] = {}
+
+    for tabla, columna, tipos, default_sql in _COLUMNAS_NUEVAS:
+        if tabla not in tablas_existentes:
+            continue  # tabla recien creada por create_all(): ya tiene todas las columnas
+        if tabla not in columnas_por_tabla:
+            columnas_por_tabla[tabla] = {c["name"] for c in inspector.get_columns(tabla)}
+        if columna in columnas_por_tabla[tabla]:
+            continue
+        tipo = tipos.get(conn.dialect.name, tipos["*"])
+        conn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo} {default_sql}".strip()))
+        logger.info(f"Migracion: agregada la columna {tabla}.{columna}")
 
 
 async def inicializar_db():
@@ -219,10 +252,21 @@ async def limpiar_eventos_viejos(dias: int = 7):
         logger.info(f"Se limpiaron {resultado.rowcount} eventos de mas de {dias} dias")
 
 
-async def guardar_mensaje(telefono: str, role: str, content: str):
-    """Guarda un mensaje en el historial de esa conversacion."""
+async def guardar_mensaje(telefono: str, role: str, content: str, remitente: str | None = None):
+    """
+    Guarda un mensaje en el historial de esa conversacion.
+
+    "remitente" es para el panel ("cliente"/"bot"/"humano"), no para la API de Claude.
+    Si no se pasa, se infiere del "role" de siempre (user->cliente, assistant->bot): la
+    inmensa mayoria de los llamadores no necesitan tocar esto, solo lo pasa explicito el
+    endpoint del panel que manda un mensaje escrito a mano por una persona del equipo.
+    """
+    if remitente is None:
+        remitente = "cliente" if role == "user" else "bot"
     async with async_session() as session:
-        session.add(Mensaje(telefono=telefono, role=role, content=content, timestamp=ahora()))
+        session.add(
+            Mensaje(telefono=telefono, role=role, content=content, remitente=remitente, timestamp=ahora())
+        )
         await session.commit()
 
 
@@ -345,6 +389,25 @@ async def reactivar_lead(telefono: str):
             await session.commit()
 
 
+async def alternar_bot(telefono: str, activo: bool) -> bool:
+    """
+    Prende o apaga el bot para UN numero puntual (panel: toggle "bot activo").
+
+    A diferencia de reactivar_lead (que solo puede reactivar, nunca apagar), esto lo usa
+    el panel para las dos direcciones: alguien del equipo toma la charla a mano (activo
+    False) y despues, cuando termina, se la devuelve a Fran (activo True). Devuelve False
+    si el telefono no tiene lead (nunca escribio), para que el llamador pueda avisar.
+    """
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is None:
+            return False
+        lead.bot_activo = activo
+        lead.actualizado_en = ahora()
+        await session.commit()
+        return True
+
+
 async def listar_leads(limite: int = 50) -> list[Lead]:
     """Los leads mas recientes primero, para revisar quien escribio."""
     async with async_session() as session:
@@ -378,6 +441,10 @@ async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> lis
             "role": m.role,
             "content": m.content,
             "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+            # Mensajes guardados antes de que existiera esta columna quedan en None: se
+            # infiere lo mismo que hacia el panel antes (por "role"), asi que ese chat
+            # viejo sigue viendose exactamente igual que siempre.
+            "remitente": m.remitente or ("cliente" if m.role == "user" else "bot"),
         }
         for m in mensajes
     ]
