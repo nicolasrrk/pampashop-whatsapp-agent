@@ -793,22 +793,21 @@ DASHBOARD_PAGINA = """<!doctype html>
 <title>Fran — Métricas</title>
 <style>
   :root {
-    --fondo:#0b0b10; --panel:rgba(255,255,255,.025); --borde:rgba(255,255,255,.08);
-    --texto:#f2f2f5; --suave:#8a8a96; --tenue:#5c5c66;
-    --acento:#9b8cff; --acento-suave:rgba(155,140,255,.14);
-    --verde:#6ee7b7;
+    --fondo:#fff; --panel:#fff; --borde:#dfe1e8;
+    --texto:#181a25; --suave:#8a8d99; --tenue:#b0b3bf;
+    --acento:#3b6fe0; --acento-suave:#eef2ff;
+    --verde:#16a34a;
+    --sombra:0 1px 3px rgba(15,23,42,.07), 0 1px 1px rgba(15,23,42,.05);
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body {
     margin:0; min-height:100vh; color:var(--texto);
     font:14.5px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    background:
-      radial-gradient(circle at 12% -10%, rgba(155,140,255,.08), transparent 45%),
-      var(--fondo);
+    background:var(--fondo);
     padding-bottom:48px;
   }
   header { position:sticky; top:0; z-index:10; backdrop-filter:blur(14px);
-    background:rgba(11,11,16,.75); border-bottom:1px solid var(--borde); }
+    background:rgba(255,255,255,.85); border-bottom:1px solid var(--borde); }
   .barra { max-width:900px; margin:0 auto; display:flex; align-items:center; gap:14px; padding:20px 22px; }
   .volver { color:var(--suave); text-decoration:none; font-size:18px; line-height:1; flex-shrink:0;
     transition:color .15s; }
@@ -830,9 +829,9 @@ DASHBOARD_PAGINA = """<!doctype html>
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:14px; margin-bottom:34px; }
   .tarjeta {
     background:var(--panel); border:1px solid var(--borde); border-radius:16px;
-    padding:20px 20px 18px; transition:border-color .2s, background .2s;
+    padding:20px 20px 18px; box-shadow:var(--sombra); transition:border-color .2s, transform .15s;
   }
-  .tarjeta:hover { border-color:rgba(255,255,255,.16); background:rgba(255,255,255,.04); }
+  .tarjeta:hover { border-color:#c7cbd6; transform:translateY(-1px); }
   .tarjeta .etiqueta { font-size:10.5px; color:var(--tenue); text-transform:uppercase;
     letter-spacing:1px; font-weight:600; margin-bottom:10px; }
   .tarjeta .valor { font-size:28px; font-weight:600; font-variant-numeric:tabular-nums;
@@ -848,19 +847,20 @@ DASHBOARD_PAGINA = """<!doctype html>
   .panelgrafico {
     background:var(--panel); border:1px solid var(--borde); border-radius:16px;
     padding:22px 22px 14px; display:flex; align-items:flex-end; gap:14px; height:150px;
+    box-shadow:var(--sombra);
   }
   .barra-dia { flex:1; display:flex; flex-direction:column; align-items:center; gap:9px; height:100%; justify-content:flex-end; }
   .barra-dia .cuerpo {
     width:100%; max-width:26px; border-radius:5px 5px 2px 2px; min-height:3px;
-    background:linear-gradient(180deg, var(--acento), rgba(155,140,255,.35));
+    background:linear-gradient(180deg, var(--acento), #a9c0f5);
     transition:height .5s ease;
   }
   .barra-dia .num { font-size:11px; color:var(--suave); font-weight:600; font-variant-numeric:tabular-nums; }
   .barra-dia .etq { font-size:10px; color:var(--tenue); text-transform:uppercase; letter-spacing:.4px; }
 
   .vacio { text-align:center; color:var(--tenue); padding:60px 16px; }
-  .error { background:rgba(220,38,38,.1); color:#f87171; padding:12px 14px; border-radius:12px;
-    border:1px solid rgba(220,38,38,.25); }
+  .error { background:#fdf2f1; color:#d0483f; padding:12px 14px; border-radius:12px;
+    border:1px solid rgba(208,72,63,.2); }
 </style>
 </head>
 <body>
