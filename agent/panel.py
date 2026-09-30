@@ -243,168 +243,262 @@ PAGINA = """<!doctype html>
 <title>Fran</title>
 <style>
   :root {
-    --fondo:#f0f2f5; --panel:#fff; --borde:#e4e6eb; --texto:#111b21; --suave:#667781;
-    --cliente:#fff; --agente:#d9fdd3; --humano:#cfe4ff; --acento:#128c7e; --acento2:#25d366;
-    --alerta:#b42318; --alerta-bg:#fef3f2; --ambar:#8a5a00; --ambar-bg:#fff8e6;
-    --sombra:0 1px 2px rgba(0,0,0,.08);
+    --app:#f4f5f8; --panel:#fff; --borde:#e6e8f0; --texto:#0f172a; --suave:#6b7280;
+    --cliente:#fff; --azul:#2f6feb; --azul-suave:#eaf1ff; --humano:#7c5cff; --humano-suave:#f1edff;
+    --acento:#0f172a;
+    --verde:#16a34a; --verde-bg:#ecfdf3;
+    --alerta:#dc2626; --alerta-bg:#fef2f2;
+    --ambar:#b45309; --ambar-bg:#fffaeb;
+    --sombra:0 1px 2px rgba(15,23,42,.06);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --fondo:#0b141a; --panel:#111b21; --borde:#222d34; --texto:#e9edef; --suave:#8696a0;
-      --cliente:#202c33; --agente:#005c4b; --humano:#1f3a5c; --acento:#00a884; --acento2:#00a884;
-      --alerta:#ff8a80; --alerta-bg:#2a1614; --ambar:#ffc94d; --ambar-bg:#2a2314;
-      --sombra:0 1px 2px rgba(0,0,0,.3);
+      --app:#0b0f1a; --panel:#121729; --borde:#242b40; --texto:#e7eaf3; --suave:#8b93a7;
+      --cliente:#1a2033; --azul:#3b73f0; --azul-suave:#182544; --humano:#8a6bf5; --humano-suave:#241d3d;
+      --acento:#e7eaf3;
+      --verde:#34d399; --verde-bg:#0f2b22;
+      --alerta:#f87171; --alerta-bg:#301316;
+      --ambar:#fbbf24; --ambar-bg:#2c2110;
+      --sombra:0 1px 2px rgba(0,0,0,.35);
     }
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; }
   body {
-    margin:0; background:var(--fondo); color:var(--texto);
-    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    padding-bottom:env(safe-area-inset-bottom);
+    margin:0; background:var(--app); color:var(--texto);
+    font:14.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   }
-  header {
-    background:var(--acento); color:#fff; position:sticky; top:0; z-index:10;
-    box-shadow:0 1px 3px rgba(0,0,0,.2);
-  }
-  .barra { display:flex; align-items:center; gap:10px; padding:13px 16px; }
-  .barra h1 { font-size:17px; margin:0; font-weight:600; flex:1;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .vivo { font-size:12px; opacity:.9; display:flex; align-items:center; gap:5px; }
-  .punto { width:7px; height:7px; border-radius:50%; background:#8bf; box-shadow:0 0 0 0 rgba(140,255,180,.7); }
-  .punto.on { background:#b9f6ca; animation:latido 2s infinite; }
-  @keyframes latido { 0%{box-shadow:0 0 0 0 rgba(185,246,202,.7)} 70%{box-shadow:0 0 0 7px rgba(185,246,202,0)} 100%{box-shadow:0 0 0 0 rgba(185,246,202,0)} }
-  .volver { background:none; border:0; color:#fff; font-size:23px; cursor:pointer; padding:0 2px; line-height:1; display:none; }
-  nav { display:flex; }
-  nav button {
-    flex:1; background:none; border:0; border-bottom:3px solid transparent; color:#fff;
-    opacity:.7; padding:11px 8px; font-size:13.5px; font-weight:600; cursor:pointer;
-    letter-spacing:.3px; font-family:inherit;
-  }
-  nav button.activa { opacity:1; border-bottom-color:#fff; }
-  nav .globo {
-    background:#ff5252; color:#fff; border-radius:9px; padding:1px 6px;
-    font-size:11px; margin-left:5px; display:inline-block;
-  }
-  main { max-width:860px; margin:0 auto; padding:14px 16px 28px; }
 
-  .chat {
-    background:var(--panel); border-radius:12px; padding:13px 15px; margin-bottom:9px;
-    cursor:pointer; box-shadow:var(--sombra); display:flex; gap:11px; align-items:center;
-    border-left:3px solid transparent; transition:transform .06s;
+  .app { display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+
+  /* ── Sidebar (top bar en mobile, columna en desktop) ────────────────── */
+  .sidebar {
+    flex-shrink:0; display:flex; align-items:center; gap:10px;
+    width:100%; padding:9px 12px; background:var(--panel);
+    border-bottom:1px solid var(--borde); position:sticky; top:0; z-index:30;
+    overflow-x:auto;
   }
-  .chat:active { transform:scale(.995); }
-  .chat.espera { border-left-color:var(--alerta); }
+  .marca { display:none; }
+  .sidebar-nav { display:flex; flex:1; gap:4px; min-width:0; }
+  .nav-btn {
+    display:flex; align-items:center; gap:6px; flex:1; justify-content:center;
+    background:none; border:0; border-radius:9px; padding:8px 6px; font-size:12.5px;
+    font-weight:600; color:var(--suave); cursor:pointer; font-family:inherit;
+    text-decoration:none; white-space:nowrap;
+  }
+  .nav-btn span.txt { overflow:hidden; text-overflow:ellipsis; }
+  .nav-btn.activa { background:var(--acento); color:var(--panel); }
+  .nav-btn .globo {
+    background:var(--alerta); color:#fff; border-radius:9px; padding:1px 6px;
+    font-size:10.5px; font-weight:700; display:inline-block;
+  }
+  .vivo-sidebar { display:none; align-items:center; gap:5px; font-size:11.5px; color:var(--suave); flex-shrink:0; }
+  .punto { width:7px; height:7px; border-radius:50%; background:#9ca3af; }
+  .punto.on { background:var(--verde); animation:latido 2s infinite; }
+  @keyframes latido { 0%{box-shadow:0 0 0 0 rgba(22,163,74,.5)} 70%{box-shadow:0 0 0 6px rgba(22,163,74,0)} 100%{box-shadow:0 0 0 0 rgba(22,163,74,0)} }
+
+  /* ── Panel principal: lista + hilo ───────────────────────────────────── */
+  .panel-principal { flex:1; display:flex; min-width:0; min-height:0; }
+
+  .lista-conversaciones {
+    width:100%; overflow-y:auto; background:var(--panel); padding:8px;
+  }
+  .item-chat {
+    display:flex; gap:11px; align-items:center; padding:11px 10px; border-radius:10px;
+    cursor:pointer; border-left:3px solid transparent; margin-bottom:2px;
+  }
+  .item-chat:hover { background:var(--app); }
+  .item-chat.seleccionado { background:var(--azul-suave); }
+  .item-chat.espera { border-left-color:var(--alerta); }
   .avatar {
-    width:40px; height:40px; border-radius:50%; background:var(--acento);
-    color:#fff; display:grid; place-items:center; font-weight:600; font-size:14px; flex-shrink:0;
+    width:38px; height:38px; border-radius:50%; background:var(--azul);
+    color:#fff; display:grid; place-items:center; font-weight:700; font-size:13px; flex-shrink:0;
   }
   .medio { flex:1; min-width:0; }
-  .tel { font-weight:600; font-size:14.5px; }
-  .ultimo { color:var(--suave); font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .cuando { color:var(--suave); font-size:11.5px; white-space:nowrap; align-self:flex-start; }
-  .etiqueta { font-size:10.5px; padding:2px 7px; border-radius:10px; font-weight:700;
-    background:var(--alerta-bg); color:var(--alerta); text-transform:uppercase; letter-spacing:.4px; }
+  .tel { font-weight:600; font-size:14px; }
+  .ultimo { color:var(--suave); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cuando { color:var(--suave); font-size:11px; white-space:nowrap; align-self:flex-start; }
+  .etiqueta { font-size:10px; padding:2px 6px; border-radius:8px; font-weight:700;
+    background:var(--alerta-bg); color:var(--alerta); text-transform:uppercase; letter-spacing:.3px; }
   .etiqueta.manual { background:var(--ambar-bg); color:var(--ambar); margin-left:4px; }
 
-  .burbuja { max-width:80%; padding:8px 11px; border-radius:9px; margin-bottom:9px;
-    white-space:pre-wrap; word-wrap:break-word; box-shadow:var(--sombra); }
-  .de-cliente { background:var(--cliente); margin-right:auto; border-top-left-radius:2px; }
-  .de-agente { background:var(--agente); margin-left:auto; border-top-right-radius:2px; }
-  .de-humano { background:var(--humano); margin-left:auto; border-top-right-radius:2px; }
-  .remitente-label { display:block; font-size:10px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.4px; opacity:.65; margin-bottom:3px; }
-  .hora { font-size:10.5px; color:var(--suave); display:block; margin-top:3px; text-align:right; }
-  .nuevo { animation:entra .3s ease-out; }
+  .hilo-conversacion { display:none; flex-direction:column; width:100%; min-height:0; background:var(--app); }
+  .app.chat-abierto .lista-conversaciones { display:none; }
+  .app.chat-abierto .hilo-conversacion { display:flex; }
+
+  .hilo-header {
+    flex-shrink:0; display:flex; align-items:center; gap:10px; padding:12px 16px;
+    background:var(--panel); border-bottom:1px solid var(--borde);
+  }
+  .volver { background:none; border:0; color:var(--texto); font-size:21px; cursor:pointer;
+    padding:0 2px; line-height:1; }
+  .hilo-header h2 { font-size:15.5px; margin:0; font-weight:700; flex:1;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  .controlbot { display:none; align-items:center; gap:8px; font-size:12.5px; color:var(--suave); flex-shrink:0; }
+  .switch { position:relative; display:inline-block; width:36px; height:21px; flex-shrink:0; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; cursor:pointer; inset:0; background:#d1d5db;
+    transition:.2s; border-radius:22px; }
+  .slider:before { content:""; position:absolute; height:15px; width:15px; left:3px; bottom:3px;
+    background:#fff; transition:.2s; border-radius:50%; }
+  .switch input:checked + .slider { background:var(--verde); }
+  .switch input:checked + .slider:before { transform:translateX(15px); }
+
+  .hilo-mensajes { flex:1; min-height:0; overflow-y:auto; padding:18px 16px; display:flex; flex-direction:column; }
+  .fila-msj { display:flex; flex-direction:column; max-width:78%; margin-bottom:14px; }
+  .fila-msj.cliente { align-self:flex-start; align-items:flex-start; }
+  .fila-msj.bot, .fila-msj.humano { align-self:flex-end; align-items:flex-end; }
+  .etiqueta-msj { font-size:11px; color:var(--suave); margin-bottom:4px; font-weight:600; }
+  .cuerpo-msj { white-space:pre-wrap; word-wrap:break-word; padding:10px 13px; border-radius:14px; }
+  .fila-msj.cliente .cuerpo-msj { background:var(--panel); border:1px solid var(--borde);
+    color:var(--texto); border-bottom-left-radius:3px; }
+  .fila-msj.bot .cuerpo-msj { background:var(--azul); color:#fff; border-bottom-right-radius:3px; }
+  .fila-msj.humano .cuerpo-msj { background:var(--humano); color:#fff; border-bottom-right-radius:3px; }
+  .fila-msj.nuevo { animation:entra .3s ease-out; }
   @keyframes entra { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
 
-  .controlbot { display:none; align-items:center; gap:9px; padding:8px 16px;
-    background:rgba(0,0,0,.12); font-size:13px; color:#fff; }
-  .switch { position:relative; display:inline-block; width:38px; height:22px; flex-shrink:0; }
-  .switch input { opacity:0; width:0; height:0; }
-  .slider { position:absolute; cursor:pointer; inset:0; background:rgba(255,255,255,.35);
-    transition:.2s; border-radius:22px; }
-  .slider:before { content:""; position:absolute; height:16px; width:16px; left:3px; bottom:3px;
-    background:#fff; transition:.2s; border-radius:50%; }
-  .switch input:checked + .slider { background:#fff; }
-  .switch input:checked + .slider:before { transform:translateX(16px); background:var(--acento); }
+  .aviso-bot { display:none; flex-shrink:0; padding:9px 16px; font-size:12.5px;
+    background:var(--ambar-bg); color:var(--ambar); border-top:1px solid var(--borde); }
 
-  body.con-caja { padding-bottom:78px; }
-  .caja-responder { display:none; position:fixed; left:0; right:0; bottom:0; z-index:20;
-    background:var(--panel); border-top:1px solid var(--borde); gap:8px; align-items:flex-end;
-    padding:10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .caja-responder { display:none; flex-shrink:0; gap:8px; align-items:flex-end;
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+    background:var(--panel); border-top:1px solid var(--borde); }
   .caja-responder textarea { flex:1; border:1px solid var(--borde); border-radius:18px;
     padding:9px 14px; font:inherit; font-size:14px; resize:none; min-height:20px; max-height:100px;
-    background:var(--fondo); color:var(--texto); }
-  .caja-responder button { background:var(--acento2); color:#fff; border:0; border-radius:18px;
+    background:var(--app); color:var(--texto); }
+  .caja-responder button { background:var(--azul); color:#fff; border:0; border-radius:18px;
     padding:9px 18px; font-weight:600; cursor:pointer; font-family:inherit; flex-shrink:0; }
   .caja-responder button:disabled { opacity:.5; cursor:default; }
 
-  .tarjeta { background:var(--panel); border-radius:12px; padding:15px; margin-bottom:12px; box-shadow:var(--sombra); }
+  /* ── Vista de borradores ─────────────────────────────────────────────── */
+  .vista-borradores { display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto;
+    padding:18px 16px; background:var(--app); }
+  .borradores-header { display:flex; align-items:baseline; gap:10px; margin-bottom:14px; }
+  .borradores-header h2 { margin:0; font-size:16px; }
+  .borradores-header span { font-size:12.5px; color:var(--suave); }
+
+  .tarjeta { background:var(--panel); border:1px solid var(--borde); border-radius:12px;
+    padding:15px; margin-bottom:12px; box-shadow:var(--sombra); }
   .tarjeta .de { font-size:12px; color:var(--suave); margin-bottom:9px; }
-  .dijo { background:var(--fondo); border-left:3px solid var(--suave); padding:9px 11px;
+  .dijo { background:var(--app); border-left:3px solid var(--suave); padding:9px 11px;
     border-radius:0 8px 8px 0; margin-bottom:11px; font-size:14px; }
   .dijo b { display:block; font-size:11px; color:var(--suave); text-transform:uppercase;
     letter-spacing:.4px; margin-bottom:3px; font-weight:700; }
-  textarea {
+  textarea.txt-borrador {
     width:100%; border:1px solid var(--borde); border-radius:9px; padding:10px 11px;
-    font:inherit; font-size:14px; background:var(--agente); color:var(--texto);
-    resize:vertical; min-height:96px;
+    font:inherit; font-size:14px; background:var(--azul-suave); color:var(--texto);
+    resize:vertical; min-height:90px;
   }
   .acciones { display:flex; gap:9px; margin-top:11px; }
   .acciones button { flex:1; border:0; border-radius:9px; padding:11px; font-size:14.5px;
     font-weight:600; cursor:pointer; font-family:inherit; }
-  .enviar { background:var(--acento2); color:#fff; }
-  .tirar { background:var(--fondo); color:var(--suave); border:1px solid var(--borde) !important; }
+  .enviar { background:var(--azul); color:#fff; }
+  .tirar { background:var(--app); color:var(--suave); border:1px solid var(--borde) !important; }
   .acciones button:disabled { opacity:.5; cursor:default; }
 
   .vacio { text-align:center; color:var(--suave); padding:56px 16px; }
   .vacio .icono { font-size:40px; display:block; margin-bottom:10px; opacity:.5; }
-  .error { background:var(--alerta-bg); color:var(--alerta); padding:12px 14px; border-radius:9px; }
-  .aviso { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
-    background:var(--texto); color:var(--fondo); padding:10px 18px; border-radius:22px;
-    font-size:14px; box-shadow:0 3px 14px rgba(0,0,0,.3); z-index:50; }
+
+  .aviso { position:fixed; top:16px; right:16px; padding:10px 16px; border-radius:10px;
+    font-size:13.5px; font-weight:600; box-shadow:0 6px 18px rgba(15,23,42,.15); z-index:60;
+    animation:entra .2s ease-out; max-width:320px; }
+  .aviso-ok { background:var(--verde-bg); color:var(--verde); border:1px solid currentColor; }
+  .aviso-error { background:var(--alerta-bg); color:var(--alerta); border:1px solid currentColor; }
+
+  /* ── Desktop: sidebar vertical + lista y hilo siempre visibles juntos ── */
+  @media (min-width: 881px) {
+    .app { flex-direction:row; }
+    .sidebar { flex-direction:column; align-items:stretch; width:230px; height:100vh;
+      border-bottom:0; border-right:1px solid var(--borde); padding:20px 14px; position:static; }
+    .marca { display:block; margin-bottom:22px; }
+    .negocio-label { font-size:10.5px; color:var(--suave); letter-spacing:.6px; text-transform:uppercase; }
+    .negocio-nombre { font-size:16px; font-weight:700; margin-top:2px; }
+    .sidebar-nav { flex-direction:column; gap:3px; }
+    .nav-btn { flex:0 0 auto; justify-content:flex-start; padding:9px 10px; font-size:13.5px; }
+    .vivo-sidebar { display:flex; margin-top:auto; padding-top:16px; }
+
+    .panel-principal { display:flex !important; }
+    .lista-conversaciones { width:320px; flex-shrink:0; border-right:1px solid var(--borde);
+      display:block !important; }
+    .hilo-conversacion { display:flex !important; }
+    .volver { display:none; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <div class="barra">
-    <button class="volver" id="volver" aria-label="Volver">&larr;</button>
-    <h1 id="titulo">Fran</h1>
-    <a id="linkMetricas" href="#" style="color:#fff;opacity:.85;text-decoration:none;font-size:19px;line-height:1;margin-right:2px;" title="Metricas">&#128202;</a>
-    <span class="vivo"><span class="punto" id="punto"></span><span id="contador"></span></span>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <div class="marca">
+      <div class="negocio-label">Negocio</div>
+      <div class="negocio-nombre">Pampa Shop</div>
+    </div>
+    <nav class="sidebar-nav" id="navLateral">
+      <button class="nav-btn activa" data-vista="chats">💬 <span class="txt">Conversaciones</span></button>
+      <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
+      <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
+    </nav>
+    <div class="vivo-sidebar"><span class="punto" id="punto"></span><span id="contador"></span></div>
+  </aside>
+
+  <div class="panel-principal" id="panelPrincipal">
+    <div class="lista-conversaciones" id="listaConversaciones"><p class="vacio">Cargando…</p></div>
+
+    <div class="hilo-conversacion" id="hiloConversacion">
+      <div class="hilo-header">
+        <button class="volver" id="volver" aria-label="Volver">&larr;</button>
+        <h2 id="tituloConv">Elegí una conversación</h2>
+        <div class="controlbot" id="controlBot">
+          <label class="switch">
+            <input type="checkbox" id="switchBot">
+            <span class="slider"></span>
+          </label>
+          <span id="estadoBot">Bot activo</span>
+        </div>
+      </div>
+      <div class="hilo-mensajes" id="hiloMensajes">
+        <p class="vacio"><span class="icono">&#128172;</span>Elegí un chat de la lista</p>
+      </div>
+      <div class="aviso-bot" id="avisoBot">
+        ⚠️ El bot está activo y podría responder al próximo mensaje del cliente. Pausalo si querés atención exclusivamente humana.
+      </div>
+      <div class="caja-responder" id="cajaResponder">
+        <textarea id="textoResponder" placeholder="Escribir como humano…" rows="1"></textarea>
+        <button id="btnResponder" onclick="enviarManual()">Enviar</button>
+      </div>
+    </div>
   </div>
-  <nav id="nav">
-    <button data-vista="chats" class="activa">CHATS</button>
-    <button data-vista="borradores">POR APROBAR<span class="globo" id="globo" style="display:none">0</span></button>
-  </nav>
-  <div class="controlbot" id="controlBot">
-    <label class="switch">
-      <input type="checkbox" id="switchBot">
-      <span class="slider"></span>
-    </label>
-    <span id="estadoBot">Bot activo</span>
+
+  <div class="vista-borradores" id="vistaBorradores">
+    <div class="borradores-header">
+      <h2>Por aprobar</h2>
+      <span id="contadorBorr"></span>
+    </div>
+    <div id="listaBorradores"><p class="vacio">Cargando…</p></div>
   </div>
-</header>
-<main id="contenido"><p class="vacio">Cargando…</p></main>
-<div class="caja-responder" id="cajaResponder">
-  <textarea id="textoResponder" placeholder="Escribir como humano…" rows="1"></textarea>
-  <button id="btnResponder" onclick="enviarManual()">Enviar</button>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const contenido = $("contenido"), titulo = $("titulo"), contador = $("contador");
-const volver = $("volver"), punto = $("punto"), globo = $("globo"), nav = $("nav");
-const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("estadoBot");
+const app = $("app");
+const navLateral = $("navLateral"), globo = $("globo"), punto = $("punto"), contador = $("contador");
+const panelPrincipal = $("panelPrincipal"), listaConversaciones = $("listaConversaciones");
+const hiloConversacion = $("hiloConversacion"), tituloConv = $("tituloConv"), volver = $("volver");
+const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("estadoBot"), avisoBot = $("avisoBot");
+const hiloMensajes = $("hiloMensajes");
 const cajaResponder = $("cajaResponder"), textoResponder = $("textoResponder"), btnResponder = $("btnResponder");
+const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorradores"), contadorBorr = $("contadorBorr");
 
 let vista = "chats";        // chats | borradores | conversacion
 let telActual = null;
-let ultimaFirma = "";       // para no repintar (y no perder el scroll) si nada cambio
+let ultimaFirmaLista = "";  // firma de la lista de chats (se repinta sola, no depende de "vista")
+let ultimaFirma = "";       // firma de la conversacion abierta
+let ultimaFirmaBorr = "";   // firma de la lista de borradores
 let leadsPorTelefono = {};  // cache de la ultima lista de leads, para leer bot_activo al abrir un chat
 
 const escapar = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
 const iniciales = (tel) => String(tel).slice(-2);
+const estaAbajo = (el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
 
 function fecha(iso) {
   if (!iso) return "";
@@ -416,11 +510,18 @@ function fecha(iso) {
   return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" }) + " " + hora;
 }
 
-function aviso(texto) {
+let ultimoErrorMostrado = "";
+function aviso(texto, tipo) {
+  if (tipo === "error") {
+    if (texto === ultimoErrorMostrado) return;  // no spamear el mismo error cada 4s
+    ultimoErrorMostrado = texto;
+    setTimeout(() => { if (ultimoErrorMostrado === texto) ultimoErrorMostrado = ""; }, 4000);
+  }
   const d = document.createElement("div");
-  d.className = "aviso"; d.textContent = texto;
+  d.className = "aviso " + (tipo === "error" ? "aviso-error" : "aviso-ok");
+  d.textContent = (tipo === "error" ? "⚠️ " : "✅ ") + texto;
   document.body.appendChild(d);
-  setTimeout(() => d.remove(), 2600);
+  setTimeout(() => d.remove(), 2800);
 }
 
 async function pedir(ruta, opciones) {
@@ -442,15 +543,16 @@ function pintarChats(leads) {
 
   contador.textContent = leads.length + (leads.length === 1 ? " chat" : " chats");
   if (!leads.length) {
-    contenido.innerHTML = '<p class="vacio"><span class="icono">&#128172;</span>Todavia no escribio nadie.</p>';
+    listaConversaciones.innerHTML = '<p class="vacio"><span class="icono">&#128172;</span>Todavía no escribió nadie.</p>';
     return;
   }
   // Los que necesitan atencion (esperan una persona, o ya la tienen atendiendo a
   // mano) van arriba.
   const necesitaAtencion = (l) => l.escalado || !l.bot_activo;
   const orden = leads.slice().sort((a, b) => necesitaAtencion(b) - necesitaAtencion(a));
-  contenido.innerHTML = orden.map(l => `
-    <div class="chat ${necesitaAtencion(l) ? "espera" : ""}" onclick="abrirChat('${escapar(l.telefono)}')">
+  listaConversaciones.innerHTML = orden.map(l => `
+    <div class="item-chat ${necesitaAtencion(l) ? "espera" : ""} ${l.telefono === telActual ? "seleccionado" : ""}"
+         onclick="abrirChat('${escapar(l.telefono)}')">
       <div class="avatar">${escapar(iniciales(l.telefono))}</div>
       <div class="medio">
         <div class="tel">${escapar(l.telefono)}
@@ -463,33 +565,31 @@ function pintarChats(leads) {
     </div>`).join("");
 }
 
-function claseBurbuja(m) {
-  if (m.remitente === "humano") return "de-humano";
-  return m.role === "user" ? "de-cliente" : "de-agente";
-}
-
 function pintarConversacion(msgs, alFinal) {
-  contador.textContent = msgs.length + " mensajes";
-  contenido.innerHTML = msgs.length
-    ? msgs.map((m, i) => `
-        <div class="burbuja ${claseBurbuja(m)} ${alFinal && i >= msgs.length - 1 ? "nuevo" : ""}">
-          ${m.remitente === "humano" ? '<span class="remitente-label">Equipo</span>' : ""}
-          ${escapar(m.content)}<span class="hora">${fecha(m.timestamp)}</span>
-        </div>`).join("")
-    : '<p class="vacio">Sin mensajes guardados.</p>';
+  hiloMensajes.innerHTML = msgs.length
+    ? msgs.map((m, i) => {
+        const tipo = m.remitente === "humano" ? "humano" : (m.role === "user" ? "cliente" : "bot");
+        const etiqueta = tipo === "cliente" ? "Cliente" : (tipo === "humano" ? "Equipo" : "Fran (IA)");
+        const esNuevo = alFinal && i >= msgs.length - 1;
+        return `<div class="fila-msj ${tipo} ${esNuevo ? "nuevo" : ""}">
+          <span class="etiqueta-msj">${etiqueta} · ${fecha(m.timestamp)}</span>
+          <div class="cuerpo-msj">${escapar(m.content)}</div>
+        </div>`;
+      }).join("")
+    : '<p class="vacio"><span class="icono">&#128172;</span>Sin mensajes guardados.</p>';
 }
 
 function pintarBorradores(bs) {
-  contador.textContent = bs.length ? bs.length + " esperando" : "al dia";
+  contadorBorr.textContent = bs.length ? bs.length + " esperando" : "al día";
   if (!bs.length) {
-    contenido.innerHTML = '<p class="vacio"><span class="icono">&#9989;</span>No hay nada para aprobar.</p>';
+    listaBorradores.innerHTML = '<p class="vacio"><span class="icono">&#9989;</span>No hay nada para aprobar.</p>';
     return;
   }
-  contenido.innerHTML = bs.map(b => `
+  listaBorradores.innerHTML = bs.map(b => `
     <div class="tarjeta" id="b${b.id}">
       <div class="de"><b>${escapar(b.telefono)}</b> &middot; ${fecha(b.creado_en)}</div>
-      <div class="dijo"><b>El cliente escribio</b>${escapar(b.mensaje_cliente)}</div>
-      <textarea id="t${b.id}">${escapar(b.respuesta)}</textarea>
+      <div class="dijo"><b>El cliente escribió</b>${escapar(b.mensaje_cliente)}</div>
+      <textarea class="txt-borrador" id="t${b.id}">${escapar(b.respuesta)}</textarea>
       <div class="acciones">
         <button class="enviar" onclick="resolver(${b.id},'aprobar')">Enviar</button>
         <button class="tirar" onclick="resolver(${b.id},'descartar')">Descartar</button>
@@ -512,42 +612,43 @@ async function resolver(id, accion) {
     });
     tarjeta.remove();
     aviso(r.estado === "enviado" ? "Enviado al cliente" : "Descartado");
-    ultimaFirma = "";
+    ultimaFirmaBorr = "";
     refrescar();
   } catch (e) {
     botones.forEach(b => b.disabled = false);
-    aviso(e.message);
+    aviso(e.message, "error");
   }
 }
 
 function actualizarControlBot(activo) {
   switchBot.checked = activo;
   estadoBot.textContent = activo ? "Bot activo" : "Modo manual";
+  avisoBot.style.display = activo ? "block" : "none";
 }
 
 function abrirChat(telefono) {
   vista = "conversacion"; telActual = telefono; ultimaFirma = "";
-  volver.style.display = "block";
-  nav.style.display = "none";
-  titulo.textContent = telefono;
+  app.classList.add("chat-abierto");
+  tituloConv.textContent = telefono;
   controlBot.style.display = "flex";
   cajaResponder.style.display = "flex";
-  document.body.classList.add("con-caja");
   const lead = leadsPorTelefono[telefono];
   actualizarControlBot(lead ? lead.bot_activo !== false : true);
+  pintarChats(Object.values(leadsPorTelefono));  // repinta para resaltar el seleccionado
   refrescar(true);
 }
 
-volver.onclick = () => {
-  vista = "chats"; telActual = null; ultimaFirma = "";
-  volver.style.display = "none";
-  nav.style.display = "flex";
+function cerrarChat() {
+  telActual = null; ultimaFirma = "";
+  app.classList.remove("chat-abierto");
+  tituloConv.textContent = "Elegí una conversación";
   controlBot.style.display = "none";
   cajaResponder.style.display = "none";
-  document.body.classList.remove("con-caja");
-  titulo.textContent = "Fran";
-  refrescar();
-};
+  avisoBot.style.display = "none";
+  hiloMensajes.innerHTML = '<p class="vacio"><span class="icono">&#128172;</span>Elegí un chat de la lista</p>';
+}
+
+volver.onclick = () => { vista = "chats"; cerrarChat(); refrescar(); };
 
 switchBot.onchange = async () => {
   const activo = switchBot.checked;
@@ -560,10 +661,10 @@ switchBot.onchange = async () => {
     });
     actualizarControlBot(activo);
     if (leadsPorTelefono[telActual]) leadsPorTelefono[telActual].bot_activo = activo;
-    aviso(activo ? "Fran vuelve a responder este chat" : "Fran ya no responde este chat");
+    aviso(activo ? "Bot activo" : "Bot pausado");
   } catch (e) {
     switchBot.checked = !activo; // revierte el visual si fallo
-    aviso(e.message);
+    aviso(e.message, "error");
   } finally {
     switchBot.disabled = false;
   }
@@ -593,55 +694,66 @@ async function enviarManual() {
     ultimaFirma = "";
     refrescar(true);
   } catch (e) {
-    aviso(e.message);
+    aviso(e.message, "error");
   } finally {
     btnResponder.disabled = false;
   }
 }
 
-nav.onclick = (e) => {
-  const boton = e.target.closest("button[data-vista]");
+navLateral.addEventListener("click", (e) => {
+  const boton = e.target.closest(".nav-btn[data-vista]");
   if (!boton) return;
-  nav.querySelectorAll("button").forEach(b => b.classList.remove("activa"));
+  navLateral.querySelectorAll(".nav-btn[data-vista]").forEach(b => b.classList.remove("activa"));
   boton.classList.add("activa");
-  vista = boton.dataset.vista; ultimaFirma = "";
+  vista = boton.dataset.vista;
+  if (vista !== "conversacion") cerrarChat();
   refrescar();
-};
+});
 
 // ── Refresco en vivo ───────────────────────────────────────────────────────
-// Cada 4 segundos. Se repinta SOLO si los datos cambiaron (se compara una firma):
-// repintar siempre reiniciaria el scroll del chat y borraria lo que estes editando
-// en un borrador. Si la pestana no esta a la vista, no se pide nada.
+// Cada 4 segundos, y solo se repinta lo que cambio (se compara una firma por
+// panel): repintar siempre reiniciaria el scroll y perderia lo que se este
+// editando en un borrador.
 
 async function refrescar(forzarAbajo) {
   if (document.hidden) return;
   punto.classList.add("on");
   try {
-    if (vista === "conversacion") {
-      const msgs = await pedir("/panel/datos/conversacion/" + encodeURIComponent(telActual));
-      const firma = JSON.stringify(msgs.map(m => m.timestamp + m.content.length));
-      if (firma !== ultimaFirma) {
-        const abajo = forzarAbajo || (window.innerHeight + window.scrollY >= document.body.scrollHeight - 120);
-        pintarConversacion(msgs, ultimaFirma !== "");
-        ultimaFirma = firma;
-        if (abajo) window.scrollTo(0, document.body.scrollHeight);
-      }
-    } else if (vista === "borradores") {
+    if (vista === "borradores") {
+      panelPrincipal.style.display = "none";
+      vistaBorradores.style.display = "flex";
       const bs = await pedir("/panel/datos/borradores");
       globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
       const firma = JSON.stringify(bs.map(b => b.id));
-      if (firma !== ultimaFirma) { pintarBorradores(bs); ultimaFirma = firma; }
-    } else {
-      const [leads, bs] = await Promise.all([
-        pedir("/panel/datos/leads"),
-        pedir("/panel/datos/borradores").catch(() => []),
-      ]);
-      globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
-      const firma = JSON.stringify(leads.map(l => l.telefono + l.actualizado_en + l.escalado + l.bot_activo));
-      if (firma !== ultimaFirma) { pintarChats(leads); ultimaFirma = firma; }
+      if (firma !== ultimaFirmaBorr) { pintarBorradores(bs); ultimaFirmaBorr = firma; }
+      return;
+    }
+
+    panelPrincipal.style.display = "flex";
+    vistaBorradores.style.display = "none";
+
+    // La lista de chats se mantiene al dia siempre: en desktop queda visible al
+    // lado del hilo, y en mobile es la pantalla de cuando no hay chat abierto.
+    const [leads, bs] = await Promise.all([
+      pedir("/panel/datos/leads"),
+      pedir("/panel/datos/borradores").catch(() => []),
+    ]);
+    globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
+    const firmaLista = JSON.stringify(leads.map(l => l.telefono + l.actualizado_en + l.escalado + l.bot_activo));
+    if (firmaLista !== ultimaFirmaLista) { pintarChats(leads); ultimaFirmaLista = firmaLista; }
+
+    if (vista === "conversacion" && telActual) {
+      const msgs = await pedir("/panel/datos/conversacion/" + encodeURIComponent(telActual));
+      const firma = JSON.stringify(msgs.map(m => m.timestamp + m.content.length));
+      if (firma !== ultimaFirma) {
+        const abajo = forzarAbajo || estaAbajo(hiloMensajes);
+        pintarConversacion(msgs, ultimaFirma !== "");
+        ultimaFirma = firma;
+        if (abajo) hiloMensajes.scrollTop = hiloMensajes.scrollHeight;
+      }
     }
   } catch (e) {
-    contenido.innerHTML = '<p class="error">' + escapar(e.message) + "</p>";
+    aviso(e.message, "error");
   } finally {
     setTimeout(() => punto.classList.remove("on"), 600);
   }
