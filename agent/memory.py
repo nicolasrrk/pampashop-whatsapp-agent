@@ -407,6 +407,28 @@ async def reactivar_lead(telefono: str):
             await session.commit()
 
 
+async def resolver_escalado(telefono: str) -> bool:
+    """
+    Saca la etiqueta "espera persona" de un lead ya atendido (boton rapido del panel,
+    para cuando alguien le contesto a mano por fuera del flujo de escalar_a_humano).
+
+    A diferencia de reactivar_lead, NO toca "actualizado_en": esa fecha representa el
+    ultimo contacto real del cliente, y la usa el filtro de fecha de la lista de chats
+    (ver agent/panel.py). Si la pisara con "ahora", resolver un chat de hace tres dias
+    lo haria aparecer como si el cliente hubiera escrito hoy.
+
+    Devuelve False si el telefono no tiene lead (nunca escribio), para que el llamador
+    pueda avisar.
+    """
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is None:
+            return False
+        lead.escalado = False
+        await session.commit()
+        return True
+
+
 async def alternar_bot(telefono: str, activo: bool) -> bool:
     """
     Prende o apaga el bot para UN numero puntual (panel: toggle "bot activo").

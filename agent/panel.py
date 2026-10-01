@@ -32,6 +32,7 @@ from agent.memory import (
     obtener_config,
     obtener_conversacion_completa,
     obtener_metricas,
+    resolver_escalado,
 )
 
 logger = logging.getLogger("agentkit")
@@ -203,6 +204,26 @@ async def accion_bot(telefono: str, request: Request, cuerpo: dict = Body(defaul
 
     logger.info(f"{telefono}: bot {'activado' if activo else 'desactivado'} desde el panel")
     return {"ok": True, "bot_activo": activo}
+
+
+@router.post("/accion/resolver/{telefono}")
+async def accion_resolver(telefono: str, request: Request):
+    """
+    Saca la etiqueta "espera persona" de un chat ya atendido: un click rapido para cuando
+    alguien del equipo ya le contesto al cliente (por WhatsApp directo, por telefono, en
+    persona) y no hace falta que siga apareciendo arriba de todo en la lista.
+
+    Distinto de "bot_activo": esto no prende ni apaga a Fran, solo saca el aviso visual.
+    Si el cliente vuelve a escribir algo que dispare la escalacion de nuevo, va a
+    reaparecer solo.
+    """
+    _verificar(request)
+    ok = await resolver_escalado(telefono)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Ese telefono no tiene conversacion registrada")
+
+    logger.info(f"{telefono}: marcado como atendido desde el panel")
+    return {"ok": True}
 
 
 @router.post("/accion/responder/{telefono}")
@@ -394,6 +415,19 @@ PAGINA = """<!doctype html>
   .etiqueta { font-size:9.5px; padding:2px 7px; border-radius:20px; font-weight:600;
     background:var(--alerta-bg); color:var(--alerta); letter-spacing:.2px; }
   .etiqueta.manual { background:var(--ambar-bg); color:var(--ambar); margin-left:4px; }
+  .btn-resolver {
+    display:inline-flex; align-items:center; justify-content:center; vertical-align:middle;
+    width:16px; height:16px; margin-left:5px; border-radius:50%; border:1px solid var(--verde);
+    background:none; color:var(--verde); font-size:10px; line-height:1; cursor:pointer;
+    padding:0; font-family:inherit;
+  }
+  .btn-resolver:hover { background:var(--verde-bg); }
+
+  .btn-resolver-header {
+    display:none; align-items:center; gap:5px; border:1px solid var(--verde); background:var(--verde-bg);
+    color:var(--verde); border-radius:8px; padding:6px 10px; font-size:12px; font-weight:600;
+    cursor:pointer; font-family:inherit; flex-shrink:0;
+  }
 
   .hilo-conversacion { display:none; flex-direction:column; width:100%; min-height:0; background:var(--app); }
   .app.chat-abierto .lista-conversaciones { display:none; }
@@ -564,6 +598,9 @@ PAGINA = """<!doctype html>
       <div class="hilo-header">
         <button class="volver" id="volver" aria-label="Volver">&larr;</button>
         <h2 id="tituloConv">Elegí una conversación</h2>
+        <button type="button" class="btn-resolver-header" id="btnResolverHeader" onclick="resolverEscalado(telActual)">
+          &#10003; Ya atendido
+        </button>
         <div class="controlbot" id="controlBot">
           <label class="switch">
             <input type="checkbox" id="switchBot">
@@ -622,6 +659,7 @@ const btnFiltroHoy = $("btnFiltroHoy"), btnFiltroAyer = $("btnFiltroAyer"), btnF
 const btnFiltroLimpiar = $("btnFiltroLimpiar");
 const hiloConversacion = $("hiloConversacion"), tituloConv = $("tituloConv"), volver = $("volver");
 const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("estadoBot"), avisoBot = $("avisoBot");
+const btnResolverHeader = $("btnResolverHeader");
 const hiloMensajes = $("hiloMensajes");
 const cajaResponder = $("cajaResponder"), textoResponder = $("textoResponder"), btnResponder = $("btnResponder");
 const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorradores"), contadorBorr = $("contadorBorr");
@@ -737,6 +775,14 @@ function pintarChats(leads) {
   leadsPorTelefono = {};
   leads.forEach(l => { leadsPorTelefono[l.telefono] = l; });
 
+  // El boton "Ya atendido" del header depende de si la charla ABIERTA esta escalada,
+  // asi que se actualiza cada vez que llega una lista nueva (polling o accion local),
+  // no solo cuando se abre el chat.
+  if (telActual) {
+    const abierto = leadsPorTelefono[telActual];
+    btnResolverHeader.style.display = abierto && abierto.escalado ? "inline-flex" : "none";
+  }
+
   const visibles = aplicarFiltroFecha(leads);
   contador.textContent = visibles.length + (visibles.length === 1 ? " chat" : " chats");
   if (!visibles.length) {
@@ -755,7 +801,8 @@ function pintarChats(leads) {
       <div class="avatar">${escapar(iniciales(l.telefono))}</div>
       <div class="medio">
         <div class="tel">${escapar(l.telefono)}
-          ${l.escalado ? '<span class="etiqueta">espera persona</span>' : ""}
+          ${l.escalado ? `<span class="etiqueta">espera persona</span><button type="button" class="btn-resolver"
+            title="Ya le contestamos: sacar el aviso" onclick="event.stopPropagation(); resolverEscalado('${escapar(l.telefono)}')">&#10003;</button>` : ""}
           ${!l.bot_activo ? '<span class="etiqueta manual">modo manual</span>' : ""}
         </div>
         <div class="ultimo">${escapar(l.ultimo_mensaje)}</div>
@@ -842,12 +889,25 @@ function cerrarChat() {
   app.classList.remove("chat-abierto");
   tituloConv.textContent = "Elegí una conversación";
   controlBot.style.display = "none";
+  btnResolverHeader.style.display = "none";
   cajaResponder.style.display = "none";
   avisoBot.style.display = "none";
   hiloMensajes.innerHTML = '<p class="vacio"><span class="icono">&#128172;</span>Elegí un chat de la lista</p>';
 }
 
 volver.onclick = () => { vista = "chats"; cerrarChat(); refrescar(); };
+
+async function resolverEscalado(telefono) {
+  if (!telefono) return;
+  try {
+    await pedir("/panel/accion/resolver/" + encodeURIComponent(telefono), { method: "POST" });
+    if (leadsPorTelefono[telefono]) leadsPorTelefono[telefono].escalado = false;
+    pintarChats(ultimosLeads);
+    aviso("Marcado como atendido");
+  } catch (e) {
+    aviso(e.message, "error");
+  }
+}
 
 switchBot.onchange = async () => {
   const activo = switchBot.checked;
