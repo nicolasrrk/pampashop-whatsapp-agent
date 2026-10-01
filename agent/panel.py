@@ -348,8 +348,31 @@ PAGINA = """<!doctype html>
   .panel-principal { flex:1; display:flex; min-width:0; min-height:0; }
 
   .lista-conversaciones {
-    width:100%; overflow-y:auto; background:var(--panel); padding:8px;
+    width:100%; display:flex; flex-direction:column; min-height:0; background:var(--panel);
   }
+  .chats-scroll { overflow-y:auto; padding:8px; flex:1; min-height:0; }
+
+  /* ── Filtro por fecha ─────────────────────────────────────────────────── */
+  .filtro-fecha {
+    flex-shrink:0; display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:10px 12px; border-bottom:1px solid var(--borde);
+  }
+  .filtro-fecha input[type="date"] {
+    border:1px solid var(--borde); border-radius:8px; padding:5px 7px; font:inherit;
+    font-size:12px; background:var(--superficie); color:var(--texto); color-scheme:light;
+    min-width:0; flex:1;
+  }
+  :root:not([data-theme="light"]) .filtro-fecha input[type="date"] { color-scheme:dark; }
+  .filtro-fecha .sep { color:var(--tenue); font-size:11px; flex-shrink:0; }
+  .filtro-fecha button {
+    border:1px solid var(--borde); background:var(--panel); color:var(--suave);
+    border-radius:8px; padding:5px 10px; font-size:11.5px; font-weight:600;
+    cursor:pointer; font-family:inherit; flex-shrink:0; white-space:nowrap;
+  }
+  .filtro-fecha button.activo { background:var(--acento-suave); color:var(--acento); border-color:transparent; }
+  .filtro-fecha .limpiar { display:none; color:var(--alerta); }
+  .filtro-fecha.con-filtro .limpiar { display:inline-block; }
+
   .item-chat {
     display:flex; gap:12px; align-items:center; padding:11px 12px; border-radius:12px;
     cursor:pointer; border-left:2px solid transparent; margin-bottom:1px;
@@ -496,7 +519,7 @@ PAGINA = """<!doctype html>
 
     .panel-principal { display:flex !important; }
     .lista-conversaciones { width:320px; flex-shrink:0; border-right:1px solid var(--borde);
-      display:block !important; }
+      display:flex !important; }
     .hilo-conversacion { display:flex !important; }
     .volver { display:none; }
 
@@ -524,7 +547,18 @@ PAGINA = """<!doctype html>
   </aside>
 
   <div class="panel-principal" id="panelPrincipal">
-    <div class="lista-conversaciones" id="listaConversaciones"><p class="vacio">Cargando…</p></div>
+    <div class="lista-conversaciones" id="listaConversaciones">
+      <div class="filtro-fecha" id="filtroFecha">
+        <button type="button" id="btnFiltroHoy">Hoy</button>
+        <button type="button" id="btnFiltroAyer">Ayer</button>
+        <button type="button" id="btnFiltro7d">7 días</button>
+        <input type="date" id="filtroDesde" aria-label="Desde">
+        <span class="sep">–</span>
+        <input type="date" id="filtroHasta" aria-label="Hasta">
+        <button type="button" class="limpiar" id="btnFiltroLimpiar">✕ Limpiar</button>
+      </div>
+      <div class="chats-scroll" id="chatsScroll"><p class="vacio">Cargando…</p></div>
+    </div>
 
     <div class="hilo-conversacion" id="hiloConversacion">
       <div class="hilo-header">
@@ -582,6 +616,10 @@ const $ = (id) => document.getElementById(id);
 const app = $("app");
 const navLateral = $("navLateral"), globo = $("globo"), punto = $("punto"), contador = $("contador");
 const panelPrincipal = $("panelPrincipal"), listaConversaciones = $("listaConversaciones");
+const chatsScroll = $("chatsScroll");
+const filtroFechaEl = $("filtroFecha"), filtroDesde = $("filtroDesde"), filtroHasta = $("filtroHasta");
+const btnFiltroHoy = $("btnFiltroHoy"), btnFiltroAyer = $("btnFiltroAyer"), btnFiltro7d = $("btnFiltro7d");
+const btnFiltroLimpiar = $("btnFiltroLimpiar");
 const hiloConversacion = $("hiloConversacion"), tituloConv = $("tituloConv"), volver = $("volver");
 const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("estadoBot"), avisoBot = $("avisoBot");
 const hiloMensajes = $("hiloMensajes");
@@ -596,6 +634,9 @@ let ultimaFirmaLista = "";  // firma de la lista de chats (se repinta sola, no d
 let ultimaFirma = "";       // firma de la conversacion abierta
 let ultimaFirmaBorr = "";   // firma de la lista de borradores
 let leadsPorTelefono = {};  // cache de la ultima lista de leads, para leer bot_activo al abrir un chat
+let ultimosLeads = [];      // la ultima lista COMPLETA (sin filtrar) que trajo el servidor
+let filtroDesdeVal = "";    // filtro de fecha de la lista de chats: "" = sin filtro
+let filtroHastaVal = "";
 let promptCargado = false;  // para no pisar lo que esta tipeando con cada polling de 4s
 
 const escapar = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
@@ -639,20 +680,76 @@ async function pedir(ruta, opciones) {
 
 // ── Pintado ────────────────────────────────────────────────────────────────
 
+// ── Filtro por fecha de la lista de chats ───────────────────────────────────
+// Filtra por la fecha LOCAL de "actualizado_en" (el dia del ultimo mensaje), no
+// por UTC: asi "Hoy" coincide con lo que el humano que mira el panel considera
+// "hoy", igual que ya hace fecha() para las etiquetas "ayer"/hora de cada chat.
+
+function diaLocal(d) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y = dt.getFullYear(), m = String(dt.getMonth() + 1).padStart(2, "0"), day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function hoyLocal() { return diaLocal(new Date()); }
+function sumarDias(diaStr, n) {
+  const [y, m, d] = diaStr.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + n);
+  return diaLocal(dt);
+}
+
+function aplicarFiltroFecha(leads) {
+  if (!filtroDesdeVal && !filtroHastaVal) return leads;
+  return leads.filter(l => {
+    const dia = diaLocal(l.actualizado_en);
+    if (filtroDesdeVal && dia < filtroDesdeVal) return false;
+    if (filtroHastaVal && dia > filtroHastaVal) return false;
+    return true;
+  });
+}
+
+function actualizarEstadoFiltro() {
+  filtroDesdeVal = filtroDesde.value;
+  filtroHastaVal = filtroHasta.value;
+  const hoy = hoyLocal(), ayer = sumarDias(hoy, -1), hace7 = sumarDias(hoy, -6);
+  btnFiltroHoy.classList.toggle("activo", filtroDesdeVal === hoy && filtroHastaVal === hoy);
+  btnFiltroAyer.classList.toggle("activo", filtroDesdeVal === ayer && filtroHastaVal === ayer);
+  btnFiltro7d.classList.toggle("activo", filtroDesdeVal === hace7 && filtroHastaVal === hoy);
+  filtroFechaEl.classList.toggle("con-filtro", !!(filtroDesdeVal || filtroHastaVal));
+  pintarChats(ultimosLeads);  // re-pinta al toque con lo que ya esta en cache, sin esperar al polling
+}
+
+function setRangoFiltro(desde, hasta) {
+  filtroDesde.value = desde;
+  filtroHasta.value = hasta;
+  actualizarEstadoFiltro();
+}
+
+btnFiltroHoy.addEventListener("click", () => { const h = hoyLocal(); setRangoFiltro(h, h); });
+btnFiltroAyer.addEventListener("click", () => { const a = sumarDias(hoyLocal(), -1); setRangoFiltro(a, a); });
+btnFiltro7d.addEventListener("click", () => setRangoFiltro(sumarDias(hoyLocal(), -6), hoyLocal()));
+btnFiltroLimpiar.addEventListener("click", () => setRangoFiltro("", ""));
+filtroDesde.addEventListener("change", actualizarEstadoFiltro);
+filtroHasta.addEventListener("change", actualizarEstadoFiltro);
+
 function pintarChats(leads) {
+  ultimosLeads = leads;
   leadsPorTelefono = {};
   leads.forEach(l => { leadsPorTelefono[l.telefono] = l; });
 
-  contador.textContent = leads.length + (leads.length === 1 ? " chat" : " chats");
-  if (!leads.length) {
-    listaConversaciones.innerHTML = '<p class="vacio"><span class="icono">&#128172;</span>Todavía no escribió nadie.</p>';
+  const visibles = aplicarFiltroFecha(leads);
+  contador.textContent = visibles.length + (visibles.length === 1 ? " chat" : " chats");
+  if (!visibles.length) {
+    chatsScroll.innerHTML = leads.length
+      ? '<p class="vacio"><span class="icono">&#128197;</span>Nadie escribió en ese rango de fechas.</p>'
+      : '<p class="vacio"><span class="icono">&#128172;</span>Todavía no escribió nadie.</p>';
     return;
   }
   // Los que necesitan atencion (esperan una persona, o ya la tienen atendiendo a
   // mano) van arriba.
   const necesitaAtencion = (l) => l.escalado || !l.bot_activo;
-  const orden = leads.slice().sort((a, b) => necesitaAtencion(b) - necesitaAtencion(a));
-  listaConversaciones.innerHTML = orden.map(l => `
+  const orden = visibles.slice().sort((a, b) => necesitaAtencion(b) - necesitaAtencion(a));
+  chatsScroll.innerHTML = orden.map(l => `
     <div class="item-chat ${necesitaAtencion(l) ? "espera" : ""} ${l.telefono === telActual ? "seleccionado" : ""}"
          onclick="abrirChat('${escapar(l.telefono)}')">
       <div class="avatar">${escapar(iniciales(l.telefono))}</div>
