@@ -162,6 +162,24 @@ class Borrador(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
+class Configuracion(Base):
+    """
+    Pares clave/valor editables desde el panel sin tocar codigo ni redeployar.
+
+    Hoy solo se usa para "system_prompt" (ver agent/panel.py, seccion Prompt), pero
+    queda generico por si mas adelante hace falta guardar otro ajuste del mismo tipo.
+    Va en la base y no en config/prompts.yaml porque en produccion el filesystem del
+    contenedor es efimero: un cambio guardado solo en el archivo se pierde en el
+    proximo redespliegue, mientras que esto sobrevive en Postgres.
+    """
+
+    __tablename__ = "configuracion"
+
+    clave: Mapped[str] = mapped_column(String(100), primary_key=True)
+    valor: Mapped[str] = mapped_column(Text)
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
 # Columnas agregadas a tablas que ya existian de deploys anteriores. Cada entrada:
 # (tabla, columna, tipo SQL, "DEFAULT ..." o "" si no hace falta). El default en la
 # propia sentencia ALTER hace que las filas VIEJAS tambien queden con un valor valido
@@ -557,6 +575,35 @@ async def obtener_metricas(dias_serie: int = 7) -> dict:
         "uso_total": uso_total,
         "serie_mensajes": serie,
     }
+
+
+# ── Configuracion editable (ej: system prompt) ──────────────────────────────
+
+
+async def obtener_config(clave: str) -> str | None:
+    """El valor guardado para esa clave, o None si nunca se seteo (usar el default del yaml)."""
+    async with async_session() as session:
+        fila = await session.get(Configuracion, clave)
+        return fila.valor if fila else None
+
+
+async def guardar_config(clave: str, valor: str):
+    """Crea o pisa el valor de una clave."""
+    async with async_session() as session:
+        fila = await session.get(Configuracion, clave)
+        if fila is None:
+            session.add(Configuracion(clave=clave, valor=valor, actualizado_en=ahora()))
+        else:
+            fila.valor = valor
+            fila.actualizado_en = ahora()
+        await session.commit()
+
+
+async def borrar_config(clave: str):
+    """Saca el override: la proxima lectura vuelve a caer al default del yaml."""
+    async with async_session() as session:
+        await session.execute(delete(Configuracion).where(Configuracion.clave == clave))
+        await session.commit()
 
 
 # ── Modo borrador ──────────────────────────────────────────────────────────

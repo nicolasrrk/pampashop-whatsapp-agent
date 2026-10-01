@@ -26,6 +26,7 @@ import yaml
 from dotenv import load_dotenv
 
 from agent.escalacion import escalar_desde_agente
+from agent.memory import obtener_config
 from agent.tools import (
     buscar_productos_tienda_nube,
     consultar_guia_talles,
@@ -235,10 +236,29 @@ def cargar_config_prompts() -> dict:
 
 
 def cargar_system_prompt() -> str:
-    """El system prompt: quien es el agente y que sabe del negocio."""
+    """
+    El system prompt base, tal cual esta en config/prompts.yaml.
+
+    Es el que trae el repo: sirve de default y de "version original" para el boton
+    de restaurar en el panel. Para el prompt que de verdad se usa en cada respuesta,
+    ver obtener_system_prompt_activo().
+    """
     return cargar_config_prompts().get(
         "system_prompt", "Eres un asistente util. Responde siempre en espanol."
     )
+
+
+async def obtener_system_prompt_activo() -> str:
+    """
+    El system prompt que se usa de verdad: el override guardado desde el panel si
+    existe, si no el base del yaml.
+
+    El override se guarda en la base (agent/memory.py: Configuracion) y no en el
+    archivo, porque en produccion el filesystem del contenedor es efimero y un cambio
+    solo en el archivo se perderia en el proximo redespliegue.
+    """
+    override = await obtener_config("system_prompt")
+    return override if override else cargar_system_prompt()
 
 
 def obtener_mensaje_error() -> str:
@@ -419,7 +439,7 @@ async def generar_respuesta(
     if not imagen and (not mensaje or len(mensaje.strip()) < 2):
         return obtener_mensaje_fallback(), False, None
 
-    system_prompt = cargar_system_prompt()
+    system_prompt = await obtener_system_prompt_activo()
     mensajes: list[dict] = [{"role": m["role"], "content": m["content"]} for m in historial]
 
     contenido_usuario: list[dict] = []

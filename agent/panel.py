@@ -20,12 +20,16 @@ import os
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from agent.brain import cargar_system_prompt
 from agent.memory import (
     alternar_bot,
+    borrar_config,
+    guardar_config,
     guardar_mensaje,
     listar_borradores_pendientes,
     listar_leads,
     marcar_borrador,
+    obtener_config,
     obtener_conversacion_completa,
     obtener_metricas,
 )
@@ -89,6 +93,22 @@ async def datos_metricas(request: Request):
     """Todo lo que pinta el dashboard: mensajes, escalados, leads y consumo de Claude."""
     _verificar(request)
     return await obtener_metricas()
+
+
+@router.get("/datos/prompt")
+async def datos_prompt(request: Request):
+    """
+    El prompt que hoy esta en uso (override guardado desde el panel, o el base del
+    repo si nadie lo toco nunca) junto con el base, para que el panel pueda mostrar
+    si esta personalizado y ofrecer "restaurar el original".
+    """
+    _verificar(request)
+    base = cargar_system_prompt()
+    override = await obtener_config("system_prompt")
+    return {
+        "prompt": override if override else base,
+        "personalizado": bool(override) and override != base,
+    }
 
 
 @router.get("/datos/borradores")
@@ -208,6 +228,31 @@ async def accion_responder(telefono: str, request: Request, cuerpo: dict = Body(
     await guardar_mensaje(telefono, "assistant", texto, remitente="humano")
     logger.info(f"Mensaje manual enviado a {telefono} desde el panel")
     return {"ok": True}
+
+
+@router.post("/accion/prompt")
+async def accion_prompt(request: Request, cuerpo: dict = Body(default={})):
+    """
+    Guarda un system prompt nuevo. Se aplica al toque: generar_respuesta lo relee de
+    la base en cada mensaje, asi que no hace falta reiniciar ni redeployar.
+    """
+    _verificar(request)
+    texto = (cuerpo.get("texto") or "").strip()
+    if not texto:
+        raise HTTPException(status_code=400, detail="El prompt no puede quedar vacio")
+
+    await guardar_config("system_prompt", texto)
+    logger.info("System prompt actualizado desde el panel")
+    return {"ok": True}
+
+
+@router.post("/accion/prompt/restaurar")
+async def accion_prompt_restaurar(request: Request):
+    """Saca el override guardado y vuelve a usar el prompt base de config/prompts.yaml."""
+    _verificar(request)
+    await borrar_config("system_prompt")
+    logger.info("System prompt restaurado al original desde el panel")
+    return {"ok": True, "prompt": cargar_system_prompt()}
 
 
 # ── Pagina ───────────────────────────────────────────────────────────────────
@@ -409,6 +454,28 @@ PAGINA = """<!doctype html>
   .vacio { text-align:center; color:var(--suave); padding:56px 16px; }
   .vacio .icono { font-size:40px; display:block; margin-bottom:10px; opacity:.5; }
 
+  /* ── Vista de prompt ──────────────────────────────────────────────────── */
+  .vista-prompt { display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto;
+    padding:18px 16px; background:var(--app); }
+  .prompt-header { display:flex; align-items:baseline; gap:10px; margin-bottom:6px; flex-wrap:wrap; }
+  .prompt-header h2 { margin:0; font-size:16px; }
+  .prompt-pill { font-size:11px; font-weight:700; padding:2px 9px; border-radius:20px;
+    background:var(--acento-suave); color:var(--acento); display:none; }
+  .prompt-pill.mostrar { display:inline-block; }
+  .prompt-ayuda { font-size:12.5px; color:var(--suave); margin:0 0 14px; line-height:1.5; }
+  textarea.txt-prompt {
+    flex:1; width:100%; min-height:320px; border:1px solid var(--borde); border-radius:12px;
+    padding:14px 16px; font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:var(--panel); color:var(--texto); resize:vertical; box-shadow:var(--sombra);
+  }
+  textarea.txt-prompt:focus { outline:none; border-color:var(--azul); }
+  .prompt-acciones { display:flex; gap:9px; margin-top:12px; flex-wrap:wrap; }
+  .prompt-acciones button { border:0; border-radius:9px; padding:11px 18px; font-size:14px;
+    font-weight:600; cursor:pointer; font-family:inherit; }
+  .prompt-acciones button:disabled { opacity:.5; cursor:default; }
+  .guardar-prompt { background:var(--azul); color:#fff; }
+  .restaurar-prompt { background:var(--app); color:var(--suave); border:1px solid var(--borde) !important; }
+
   .aviso { position:fixed; top:16px; right:16px; padding:10px 16px; border-radius:12px;
     font-size:13px; font-weight:600; box-shadow:0 8px 24px rgba(15,23,42,.12); z-index:60;
     animation:entra .2s ease-out; max-width:320px; }
@@ -432,6 +499,11 @@ PAGINA = """<!doctype html>
       display:block !important; }
     .hilo-conversacion { display:flex !important; }
     .volver { display:none; }
+
+    /* Borradores y Prompt son vistas de ancho completo: en desktop, sin esto, el
+       panel de conversaciones (fijo con !important arriba) quedaria apretujado
+       al lado en vez de ceder todo el espacio. */
+    .app.vista-secundaria .panel-principal { display:none !important; }
   }
 </style>
 </head>
@@ -445,6 +517,7 @@ PAGINA = """<!doctype html>
     <nav class="sidebar-nav" id="navLateral">
       <button class="nav-btn activa" data-vista="chats">💬 <span class="txt">Conversaciones</span></button>
       <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
+      <button class="nav-btn" data-vista="prompt">⚙️ <span class="txt">Prompt</span></button>
       <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
     </nav>
     <div class="vivo-sidebar"><span class="punto" id="punto"></span><span id="contador"></span></div>
@@ -485,6 +558,23 @@ PAGINA = """<!doctype html>
     </div>
     <div id="listaBorradores"><p class="vacio">Cargando…</p></div>
   </div>
+
+  <div class="vista-prompt" id="vistaPrompt">
+    <div class="prompt-header">
+      <h2>Comportamiento del agente</h2>
+      <span class="prompt-pill" id="pillPersonalizado">Personalizado</span>
+    </div>
+    <p class="prompt-ayuda">
+      Esto es lo que le dice a Fran quién es, cómo hablar y qué reglas seguir. Se aplica
+      al instante a partir del próximo mensaje — no hace falta reiniciar nada. Escribí
+      con cuidado: un cambio acá afecta TODAS las conversaciones nuevas.
+    </p>
+    <textarea class="txt-prompt" id="textoPrompt" placeholder="Cargando…" spellcheck="false"></textarea>
+    <div class="prompt-acciones">
+      <button class="guardar-prompt" id="btnGuardarPrompt" onclick="guardarPrompt()">Guardar cambios</button>
+      <button class="restaurar-prompt" id="btnRestaurarPrompt" onclick="restaurarPrompt()">Restaurar original</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -497,13 +587,16 @@ const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("e
 const hiloMensajes = $("hiloMensajes");
 const cajaResponder = $("cajaResponder"), textoResponder = $("textoResponder"), btnResponder = $("btnResponder");
 const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorradores"), contadorBorr = $("contadorBorr");
+const vistaPrompt = $("vistaPrompt"), textoPrompt = $("textoPrompt"), pillPersonalizado = $("pillPersonalizado");
+const btnGuardarPrompt = $("btnGuardarPrompt"), btnRestaurarPrompt = $("btnRestaurarPrompt");
 
-let vista = "chats";        // chats | borradores | conversacion
+let vista = "chats";        // chats | borradores | prompt | conversacion
 let telActual = null;
 let ultimaFirmaLista = "";  // firma de la lista de chats (se repinta sola, no depende de "vista")
 let ultimaFirma = "";       // firma de la conversacion abierta
 let ultimaFirmaBorr = "";   // firma de la lista de borradores
 let leadsPorTelefono = {};  // cache de la ultima lista de leads, para leer bot_activo al abrir un chat
+let promptCargado = false;  // para no pisar lo que esta tipeando con cada polling de 4s
 
 const escapar = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
 const iniciales = (tel) => String(tel).slice(-2);
@@ -709,13 +802,56 @@ async function enviarManual() {
   }
 }
 
+async function cargarPrompt() {
+  const d = await pedir("/panel/datos/prompt");
+  textoPrompt.value = d.prompt;
+  pillPersonalizado.classList.toggle("mostrar", d.personalizado);
+  promptCargado = true;
+}
+
+async function guardarPrompt() {
+  const texto = textoPrompt.value.trim();
+  if (!texto) { aviso("El prompt no puede quedar vacío", "error"); return; }
+  btnGuardarPrompt.disabled = true;
+  try {
+    await pedir("/panel/accion/prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto }),
+    });
+    pillPersonalizado.classList.add("mostrar");
+    aviso("Prompt actualizado — ya está en uso");
+  } catch (e) {
+    aviso(e.message, "error");
+  } finally {
+    btnGuardarPrompt.disabled = false;
+  }
+}
+
+async function restaurarPrompt() {
+  if (!confirm("¿Volver al prompt original del repositorio? Se pierde lo que hayas personalizado.")) return;
+  btnRestaurarPrompt.disabled = true;
+  try {
+    const d = await pedir("/panel/accion/prompt/restaurar", { method: "POST" });
+    textoPrompt.value = d.prompt;
+    pillPersonalizado.classList.remove("mostrar");
+    aviso("Prompt restaurado al original");
+  } catch (e) {
+    aviso(e.message, "error");
+  } finally {
+    btnRestaurarPrompt.disabled = false;
+  }
+}
+
 navLateral.addEventListener("click", (e) => {
   const boton = e.target.closest(".nav-btn[data-vista]");
   if (!boton) return;
   navLateral.querySelectorAll(".nav-btn[data-vista]").forEach(b => b.classList.remove("activa"));
   boton.classList.add("activa");
   vista = boton.dataset.vista;
+  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt");
   if (vista !== "conversacion") cerrarChat();
+  if (vista === "prompt" && !promptCargado) cargarPrompt().catch(e => aviso(e.message, "error"));
   refrescar();
 });
 
@@ -731,6 +867,7 @@ async function refrescar(forzarAbajo) {
     if (vista === "borradores") {
       panelPrincipal.style.display = "none";
       vistaBorradores.style.display = "flex";
+      vistaPrompt.style.display = "none";
       const bs = await pedir("/panel/datos/borradores");
       globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
       const firma = JSON.stringify(bs.map(b => b.id));
@@ -738,8 +875,18 @@ async function refrescar(forzarAbajo) {
       return;
     }
 
+    if (vista === "prompt") {
+      // No se re-pide cada 4s a propósito: pisaría lo que la persona esté tipeando.
+      // Se carga una sola vez al entrar (ver el click handler de navLateral).
+      panelPrincipal.style.display = "none";
+      vistaBorradores.style.display = "none";
+      vistaPrompt.style.display = "flex";
+      return;
+    }
+
     panelPrincipal.style.display = "flex";
     vistaBorradores.style.display = "none";
+    vistaPrompt.style.display = "none";
 
     // La lista de chats se mantiene al dia siempre: en desktop queda visible al
     // lado del hilo, y en mobile es la pantalla de cuando no hay chat abierto.
