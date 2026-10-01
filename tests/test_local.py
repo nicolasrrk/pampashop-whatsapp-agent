@@ -42,7 +42,7 @@ async def main():
 
     print()
     print("=" * 55)
-    print("   AgentKit — Test Local — Fran (PAMPA SHOP)")
+    print("   AgentKit — Test Local — PAMPA (PAMPA SHOP)")
     print("=" * 55)
     print()
     print("  Escribe mensajes como si fueras un cliente.")
@@ -85,7 +85,7 @@ async def main():
         await registrar_contacto(TELEFONO_TEST, mensaje)
 
         if await esta_escalado(TELEFONO_TEST):
-            print("\nFran: [el agente no contesta: este chat esta escalado a un humano]")
+            print("\nPAMPA: [el agente no contesta: este chat esta escalado a un humano]")
             print("       (escribi 'reactivar' para volver a probar)\n")
             continue
 
@@ -95,7 +95,7 @@ async def main():
             await marcar_escalado(TELEFONO_TEST)
             await guardar_mensaje(TELEFONO_TEST, "user", mensaje)
             await guardar_mensaje(TELEFONO_TEST, "assistant", mensaje_escalacion)
-            print(f"\nFran: {mensaje_escalacion}")
+            print(f"\nPAMPA: {mensaje_escalacion}")
             print(f"       [escalado por la palabra '{palabra}'; en producción se avisaría")
             print("       por el canal interno configurado en ESCALACION_SLACK_WEBHOOK /")
             print("       ESCALACION_WHATSAPP_NUMERO]\n")
@@ -104,7 +104,7 @@ async def main():
         # El historial se lee ANTES de guardar (brain.py agrega el mensaje actual)
         historial = await obtener_historial(TELEFONO_TEST)
 
-        print("\nFran: ", end="", flush=True)
+        print("\nPAMPA: ", end="", flush=True)
         respuesta, es_respuesta_real, uso = await generar_respuesta(mensaje, historial, telefono=TELEFONO_TEST)
         print(respuesta)
         if uso:

@@ -285,7 +285,7 @@ PAGINA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fran</title>
+<title>PAMPA</title>
 <style>
   :root {
     --app:#fff; --panel:#fff; --borde:#dfe1e8; --texto:#181a25; --suave:#8a8d99; --tenue:#b0b3bf;
@@ -565,7 +565,7 @@ PAGINA = """<!doctype html>
       <span class="prompt-pill" id="pillPersonalizado">Personalizado</span>
     </div>
     <p class="prompt-ayuda">
-      Esto es lo que le dice a Fran quién es, cómo hablar y qué reglas seguir. Se aplica
+      Esto es lo que le dice a PAMPA quién es, cómo hablar y qué reglas seguir. Se aplica
       al instante a partir del próximo mensaje — no hace falta reiniciar nada. Escribí
       con cuidado: un cambio acá afecta TODAS las conversaciones nuevas.
     </p>
@@ -671,7 +671,7 @@ function pintarConversacion(msgs, alFinal) {
   hiloMensajes.innerHTML = msgs.length
     ? msgs.map((m, i) => {
         const tipo = m.remitente === "humano" ? "humano" : (m.role === "user" ? "cliente" : "bot");
-        const etiqueta = tipo === "cliente" ? "Cliente" : (tipo === "humano" ? "Equipo" : "Fran (IA)");
+        const etiqueta = tipo === "cliente" ? "Cliente" : (tipo === "humano" ? "Equipo" : "PAMPA (IA)");
         const esNuevo = alFinal && i >= msgs.length - 1;
         return `<div class="fila-msj ${tipo} ${esNuevo ? "nuevo" : ""}">
           <span class="etiqueta-msj">${etiqueta} · ${fecha(m.timestamp)}</span>
@@ -937,7 +937,7 @@ DASHBOARD_PAGINA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fran — Métricas</title>
+<title>PAMPA — Métricas</title>
 <style>
   :root {
     --fondo:#fff; --panel:#fff; --borde:#dfe1e8;
@@ -1015,7 +1015,7 @@ DASHBOARD_PAGINA = """<!doctype html>
   <div class="barra">
     <a class="volver" href="/panel" title="Volver a chats">&larr;</a>
     <div class="titulos">
-      <h1><b>Fran</b> — Panel de control</h1>
+      <h1><b>PAMPA</b> — Panel de control</h1>
       <p>Pampa Shop · métricas en vivo</p>
     </div>
     <span class="vivo"><span class="punto"></span>vivo</span>
