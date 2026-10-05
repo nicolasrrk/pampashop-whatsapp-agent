@@ -18,7 +18,7 @@ import logging
 import os
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from agent.brain import cargar_system_prompt
 from agent.memory import (
@@ -31,6 +31,7 @@ from agent.memory import (
     marcar_borrador,
     obtener_config,
     obtener_conversacion_completa,
+    obtener_imagen,
     obtener_metricas,
     resolver_escalado,
 )
@@ -89,6 +90,22 @@ async def datos_conversacion(telefono: str, request: Request):
     return await obtener_conversacion_completa(telefono)
 
 
+@router.get("/imagen/{imagen_id}")
+async def imagen(imagen_id: int, request: Request):
+    """
+    Una foto que mando un cliente. Lleva el mismo control de acceso que el resto del
+    panel: el <img> del navegador manda la cookie solo, asi que no hace falta pasar el
+    token en cada URL (y no queda una foto de un cliente accesible a cualquiera).
+    """
+    _verificar(request)
+    encontrada = await obtener_imagen(imagen_id)
+    if encontrada is None:
+        raise HTTPException(status_code=404, detail="Esa imagen no existe")
+    media_type, datos = encontrada
+    # "private": que la guarde el navegador de quien la ve, pero nunca un cache compartido.
+    return Response(content=datos, media_type=media_type, headers={"Cache-Control": "private, max-age=86400"})
+
+
 @router.get("/datos/metricas")
 async def datos_metricas(request: Request):
     """Todo lo que pinta el dashboard: mensajes, escalados, leads y consumo de Claude."""
@@ -122,6 +139,7 @@ async def datos_borradores(request: Request):
             "id": b.id,
             "telefono": b.telefono,
             "mensaje_cliente": b.mensaje_cliente,
+            "imagen_id": json.loads(b.contexto_json or "{}").get("imagen_id"),
             "respuesta": b.respuesta,
             "creado_en": b.creado_en.isoformat() if b.creado_en else None,
         }
@@ -178,7 +196,9 @@ async def accion_borrador(
         raise HTTPException(status_code=502, detail="No se pudo enviar. Queda pendiente.")
 
     await marcar_borrador(borrador_id, "aprobado")
-    await guardar_mensaje(borrador.telefono, "user", borrador.mensaje_cliente)
+    await guardar_mensaje(
+        borrador.telefono, "user", borrador.mensaje_cliente, imagen_id=contexto.get("imagen_id")
+    )
     await guardar_mensaje(borrador.telefono, "assistant", texto)
     logger.info(f"Borrador {borrador_id} aprobado y enviado desde el panel")
     return {"ok": True, "estado": "enviado"}
@@ -464,6 +484,19 @@ PAGINA = """<!doctype html>
     color:var(--texto); border-bottom-left-radius:4px; }
   .fila-msj.bot .cuerpo-msj { background:var(--azul); color:#fff; border-bottom-right-radius:4px; }
   .fila-msj.humano .cuerpo-msj { background:var(--humano); color:#fff; border-bottom-right-radius:4px; }
+
+  /* ── Fotos que mandan los clientes ────────────────────────────────────── */
+  .img-msj { display:block; max-width:260px; width:100%; max-height:300px; object-fit:cover;
+    border-radius:10px; cursor:zoom-in; background:var(--superficie); }
+  .cuerpo-msj .img-msj + .txt-img { margin-top:8px; display:block; }
+  .img-msj-borrador { max-width:180px; max-height:180px; margin:0 0 8px; }
+  .visor {
+    position:fixed; inset:0; z-index:80; background:rgba(8,10,16,.88); display:none;
+    align-items:center; justify-content:center; padding:20px; cursor:zoom-out;
+  }
+  .visor.abierto { display:flex; }
+  .visor img { max-width:100%; max-height:100%; border-radius:8px; box-shadow:0 10px 40px rgba(0,0,0,.5); }
+  .visor .cerrar-visor { position:absolute; top:16px; right:20px; color:#fff; font-size:28px; line-height:1; }
   .fila-msj.nuevo { animation:entra .3s ease-out; }
   @keyframes entra { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
 
@@ -648,6 +681,11 @@ PAGINA = """<!doctype html>
   </div>
 </div>
 
+<div class="visor" id="visor" onclick="cerrarVisor()">
+  <span class="cerrar-visor">&times;</span>
+  <img id="visorImg" alt="Foto del cliente">
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const app = $("app");
@@ -805,11 +843,33 @@ function pintarChats(leads) {
             title="Ya le contestamos: sacar el aviso" onclick="event.stopPropagation(); resolverEscalado('${escapar(l.telefono)}')">&#10003;</button>` : ""}
           ${!l.bot_activo ? '<span class="etiqueta manual">modo manual</span>' : ""}
         </div>
-        <div class="ultimo">${escapar(l.ultimo_mensaje)}</div>
+        <div class="ultimo">${l.ultimo_mensaje === TEXTO_FOTO ? "&#128247; Foto" : escapar(l.ultimo_mensaje)}</div>
       </div>
       <span class="cuando">${fecha(l.actualizado_en)}</span>
     </div>`).join("");
 }
+
+hiloMensajes.addEventListener("scroll", () => { pegarAbajo = estaAbajo(hiloMensajes); });
+
+// Texto que se guarda cuando el cliente manda una foto sin escribir nada (ver
+// providers/meta.py). Si la foto se puede mostrar, ese texto sobra.
+const TEXTO_FOTO = "[el cliente envio una foto]";
+
+// Las fotos se cargan DESPUES de pintar el hilo (su alto se conoce recien al bajar), asi
+// que el scroll al final que se hace al pintar queda corto. Si la persona estaba pegada
+// al final, se vuelve a bajar cada vez que termina de cargar una foto; si subio a leer
+// mas arriba, no se la mueve.
+let pegarAbajo = true;
+function fotoCargada() { if (pegarAbajo) hiloMensajes.scrollTop = hiloMensajes.scrollHeight; }
+
+function htmlImagen(id, extraClase) {
+  return `<img class="img-msj ${extraClase || ""}" src="/panel/imagen/${Number(id)}" alt="Foto del cliente"
+    onload="fotoCargada()" onclick="event.stopPropagation(); abrirVisor(this.src)">`;
+}
+
+function abrirVisor(src) { $("visorImg").src = src; $("visor").classList.add("abierto"); }
+function cerrarVisor() { $("visor").classList.remove("abierto"); $("visorImg").removeAttribute("src"); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") cerrarVisor(); });
 
 function pintarConversacion(msgs, alFinal) {
   hiloMensajes.innerHTML = msgs.length
@@ -817,9 +877,14 @@ function pintarConversacion(msgs, alFinal) {
         const tipo = m.remitente === "humano" ? "humano" : (m.role === "user" ? "cliente" : "bot");
         const etiqueta = tipo === "cliente" ? "Cliente" : (tipo === "humano" ? "Equipo" : "PAMPA (IA)");
         const esNuevo = alFinal && i >= msgs.length - 1;
+        let cuerpo = escapar(m.content);
+        if (m.imagen_id != null) {
+          const texto = m.content.trim() === TEXTO_FOTO ? "" : m.content;
+          cuerpo = htmlImagen(m.imagen_id) + (texto ? `<span class="txt-img">${escapar(texto)}</span>` : "");
+        }
         return `<div class="fila-msj ${tipo} ${esNuevo ? "nuevo" : ""}">
           <span class="etiqueta-msj">${etiqueta} · ${fecha(m.timestamp)}</span>
-          <div class="cuerpo-msj">${escapar(m.content)}</div>
+          <div class="cuerpo-msj">${cuerpo}</div>
         </div>`;
       }).join("")
     : '<p class="vacio"><span class="icono">&#128172;</span>Sin mensajes guardados.</p>';
@@ -834,7 +899,8 @@ function pintarBorradores(bs) {
   listaBorradores.innerHTML = bs.map(b => `
     <div class="tarjeta" id="b${b.id}">
       <div class="de"><b>${escapar(b.telefono)}</b> &middot; ${fecha(b.creado_en)}</div>
-      <div class="dijo"><b>El cliente escribió</b>${escapar(b.mensaje_cliente)}</div>
+      <div class="dijo"><b>El cliente escribió</b>${b.imagen_id != null ? htmlImagen(b.imagen_id, "img-msj-borrador") : ""}${
+        b.imagen_id != null && b.mensaje_cliente.trim() === TEXTO_FOTO ? "" : escapar(b.mensaje_cliente)}</div>
       <textarea class="txt-borrador" id="t${b.id}">${escapar(b.respuesta)}</textarea>
       <div class="acciones">
         <button class="enviar" onclick="resolver(${b.id},'aprobar')">Enviar</button>
@@ -1062,6 +1128,7 @@ async function refrescar(forzarAbajo) {
         const abajo = forzarAbajo || estaAbajo(hiloMensajes);
         pintarConversacion(msgs, ultimaFirma !== "");
         ultimaFirma = firma;
+        pegarAbajo = abajo;
         if (abajo) hiloMensajes.scrollTop = hiloMensajes.scrollHeight;
       }
     }

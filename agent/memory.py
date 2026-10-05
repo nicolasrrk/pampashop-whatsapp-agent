@@ -8,12 +8,13 @@ que eventos de webhook ya se atendieron.
 SQLite en local, PostgreSQL en produccion.
 """
 
+import base64
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, select, text
+from sqlalchemy import DateTime, Float, Integer, LargeBinary, String, Text, delete, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -69,6 +70,28 @@ class Mensaje(Base):
     # mensajes guardados ANTES de este campo no lo tienen: para esos, el panel infiere
     # "cliente"/"bot" a partir de "role" (ver obtener_conversacion_completa).
     remitente: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
+    # Foto que mando el cliente en ESTE mensaje (ver clase Imagen). Nullable: casi todos
+    # los mensajes son solo texto, y los viejos (anteriores a este campo) tampoco la tienen.
+    imagen_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
+
+class Imagen(Base):
+    """
+    Foto que mando un cliente, guardada para poder verla en el panel.
+
+    Se guarda al recibirla y no se vuelve a pedir a Meta despues: los links de descarga
+    de WhatsApp vencen a los pocos dias, asi que si no se persiste en el momento, la foto
+    se pierde para siempre. Va en la base (no en archivos sueltos) para que viaje igual con
+    SQLite sobre el volumen de Railway o con Postgres, sin depender de ninguna carpeta.
+    """
+
+    __tablename__ = "imagenes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    media_type: Mapped[str] = mapped_column(String(50))
+    datos: Mapped[bytes] = mapped_column(LargeBinary)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
 class EventoProcesado(Base):
@@ -189,6 +212,7 @@ _COLUMNAS_NUEVAS = [
     ("leads", "ultimo_aviso_escalado", {"postgresql": "TIMESTAMP WITH TIME ZONE", "*": "TIMESTAMP"}, ""),
     ("leads", "bot_activo", {"postgresql": "BOOLEAN", "*": "BOOLEAN"}, "DEFAULT TRUE"),
     ("mensajes", "remitente", {"postgresql": "VARCHAR(20)", "*": "VARCHAR(20)"}, ""),
+    ("mensajes", "imagen_id", {"postgresql": "INTEGER", "*": "INTEGER"}, ""),
 ]
 
 
@@ -270,7 +294,13 @@ async def limpiar_eventos_viejos(dias: int = 7):
         logger.info(f"Se limpiaron {resultado.rowcount} eventos de mas de {dias} dias")
 
 
-async def guardar_mensaje(telefono: str, role: str, content: str, remitente: str | None = None):
+async def guardar_mensaje(
+    telefono: str,
+    role: str,
+    content: str,
+    remitente: str | None = None,
+    imagen_id: int | None = None,
+):
     """
     Guarda un mensaje en el historial de esa conversacion.
 
@@ -283,7 +313,14 @@ async def guardar_mensaje(telefono: str, role: str, content: str, remitente: str
         remitente = "cliente" if role == "user" else "bot"
     async with async_session() as session:
         session.add(
-            Mensaje(telefono=telefono, role=role, content=content, remitente=remitente, timestamp=ahora())
+            Mensaje(
+                telefono=telefono,
+                role=role,
+                content=content,
+                remitente=remitente,
+                imagen_id=imagen_id,
+                timestamp=ahora(),
+            )
         )
         await session.commit()
 
@@ -319,6 +356,28 @@ async def limpiar_historial(telefono: str):
     async with async_session() as session:
         await session.execute(delete(Mensaje).where(Mensaje.telefono == telefono))
         await session.commit()
+
+
+async def guardar_imagen(telefono: str, media_type: str, datos_base64: str) -> int:
+    """Guarda una foto del cliente (llega en base64, tal como se la manda a Claude). Devuelve su id."""
+    async with async_session() as session:
+        imagen = Imagen(
+            telefono=telefono,
+            media_type=media_type,
+            datos=base64.b64decode(datos_base64),
+            creado_en=ahora(),
+        )
+        session.add(imagen)
+        await session.commit()
+        await session.refresh(imagen)
+        return imagen.id
+
+
+async def obtener_imagen(imagen_id: int) -> tuple[str, bytes] | None:
+    """(media_type, bytes) de una foto guardada, o None si no existe."""
+    async with async_session() as session:
+        imagen = await session.get(Imagen, imagen_id)
+        return (imagen.media_type, imagen.datos) if imagen else None
 
 
 # ── CRM: leads ───────────────────────────────────────────────────────────────
@@ -485,6 +544,7 @@ async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> lis
             # infiere lo mismo que hacia el panel antes (por "role"), asi que ese chat
             # viejo sigue viendose exactamente igual que siempre.
             "remitente": m.remitente or ("cliente" if m.role == "user" else "bot"),
+            "imagen_id": m.imagen_id,
         }
         for m in mensajes
     ]

@@ -32,6 +32,7 @@ from agent.escalacion import (
 from agent.memory import (
     crear_borrador,
     debe_reavisar_escalacion,
+    guardar_imagen,
     guardar_mensaje,
     guardar_uso,
     inicializar_db,
@@ -221,6 +222,11 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # scripts/leads.py muestre quien escribio sin tener que abrir WhatsApp.
             lead = await registrar_contacto(msg.telefono, msg.texto)
 
+            # Si el cliente mando una foto, se guarda YA (antes de cualquier rama que pueda
+            # cortar el flujo: bot pausado, escalacion, borrador): los links de descarga de
+            # Meta vencen, asi que es ahora o nunca si se la quiere ver despues en el panel.
+            imagen_id = await _guardar_imagen_entrante(msg)
+
             # Primerisimo mensaje de este numero (registrar_contacto crea el lead con
             # veces_contactado=1): se manda el saludo fijo de bienvenida como un
             # mensaje APARTE, antes de contestar lo que haya preguntado. No se repite
@@ -234,7 +240,9 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # de escalacion -- eso ahora lo maneja una persona, no Fran. Distinto de
             # "escalado": ver el comentario en agent/memory.py (clase Lead).
             if not lead.bot_activo:
-                await guardar_mensaje(msg.telefono, "user", msg.texto, remitente="cliente")
+                await guardar_mensaje(
+                    msg.telefono, "user", msg.texto, remitente="cliente", imagen_id=imagen_id
+                )
                 logger.info(f"{msg.telefono}: bot desactivado a mano, se guarda sin responder")
                 return
 
@@ -256,7 +264,7 @@ async def procesar_mensaje(msg: MensajeEntrante):
             if await debe_reavisar_escalacion(msg.telefono, AVISO_ESCALACION_COOLDOWN):
                 palabra = detectar_palabra_clave(msg.texto)
                 if palabra:
-                    await _escalar_a_humano(msg, evento_id, palabra)
+                    await _escalar_a_humano(msg, evento_id, palabra, imagen_id)
                     return
 
             # Audio, video, documentos, o una imagen que no se pudo descargar: no se
@@ -276,7 +284,9 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # Los avisos tecnicos (error/fallback) se mandan directo: frenarlos a
             # esperar aprobacion solo deja al cliente sin nada mas tiempo.
             if es_respuesta_real and MODO_ENVIO == "borrador":
-                await crear_borrador(msg.telefono, msg.texto, respuesta, json.dumps(msg.contexto))
+                await crear_borrador(
+                    msg.telefono, msg.texto, respuesta, _contexto_liviano(msg, imagen_id)
+                )
                 logger.info(
                     f"Borrador creado para {msg.telefono}. Revisar con: python scripts/bandeja.py"
                 )
@@ -297,7 +307,7 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # tecnicos ("estoy teniendo problemas") no son un turno del agente: guardarlos
             # los deja contaminando el contexto de todos los mensajes que vengan despues.
             if es_respuesta_real:
-                await guardar_mensaje(msg.telefono, "user", msg.texto)
+                await guardar_mensaje(msg.telefono, "user", msg.texto, imagen_id=imagen_id)
                 await guardar_mensaje(msg.telefono, "assistant", respuesta)
                 # "uso" es None para los avisos de tipo no soportado (no hubo llamada a
                 # Claude) y para cualquier caso que ya se filtro arriba: solo se guarda
@@ -340,7 +350,7 @@ async def _enviar_bienvenida(msg: MensajeEntrante):
         if MODO_ENVIO == "borrador":
             # Mismo circuito que cualquier otro mensaje real en modo borrador: queda
             # pendiente en scripts/bandeja.py / el panel, no sale solo.
-            await crear_borrador(msg.telefono, "(primer contacto)", texto, json.dumps(msg.contexto))
+            await crear_borrador(msg.telefono, "(primer contacto)", texto, _contexto_liviano(msg))
             logger.info(f"{msg.telefono}: bienvenida en borrador, pendiente de aprobar")
             return
 
@@ -354,7 +364,38 @@ async def _enviar_bienvenida(msg: MensajeEntrante):
         logger.error(f"Error mandando la bienvenida a {msg.telefono}: {e}")
 
 
-async def _escalar_a_humano(msg: MensajeEntrante, evento_id: str, palabra: str):
+async def _guardar_imagen_entrante(msg: MensajeEntrante) -> int | None:
+    """
+    Guarda la foto que mando el cliente (si mando una) y devuelve su id.
+
+    Nunca debe frenar la respuesta: si falla (base llena, base64 raro), se loguea y el
+    flujo sigue sin foto. Lo peor que pasa es que esa foto no se vea en el panel.
+    """
+    imagen = msg.contexto.get("imagen")
+    if not imagen:
+        return None
+    try:
+        return await guardar_imagen(msg.telefono, imagen["media_type"], imagen["data"])
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"No se pudo guardar la foto de {msg.telefono}: {e}")
+        return None
+
+
+def _contexto_liviano(msg: MensajeEntrante, imagen_id: int | None = None) -> str:
+    """
+    El contexto del mensaje serializado para guardarlo en un borrador, SIN los bytes de
+    la foto: la imagen en base64 pesa cientos de KB y ya esta guardada aparte
+    (tabla imagenes), asi que el borrador solo lleva su id.
+    """
+    contexto = {k: v for k, v in msg.contexto.items() if k != "imagen"}
+    if imagen_id:
+        contexto["imagen_id"] = imagen_id
+    return json.dumps(contexto)
+
+
+async def _escalar_a_humano(
+    msg: MensajeEntrante, evento_id: str, palabra: str, imagen_id: int | None = None
+):
     """
     Marca el numero como escalado, avisa por el canal interno, y manda (o deja en
     borrador) el unico mensaje de aviso al cliente. El aviso interno sale siempre,
@@ -366,13 +407,15 @@ async def _escalar_a_humano(msg: MensajeEntrante, evento_id: str, palabra: str):
     await avisar_canal_interno(msg.telefono, msg.texto, f"palabra clave: {palabra}")
 
     if MODO_ENVIO == "borrador":
-        await crear_borrador(msg.telefono, msg.texto, mensaje_escalacion, json.dumps(msg.contexto))
+        await crear_borrador(
+            msg.telefono, msg.texto, mensaje_escalacion, _contexto_liviano(msg, imagen_id)
+        )
         logger.info(f"{msg.telefono} escalado por '{palabra}'. Aviso pendiente en scripts/bandeja.py")
         return
 
     enviado = await proveedor.enviar_mensaje(msg.telefono, mensaje_escalacion, msg.contexto)
     if enviado:
-        await guardar_mensaje(msg.telefono, "user", msg.texto)
+        await guardar_mensaje(msg.telefono, "user", msg.texto, imagen_id=imagen_id)
         await guardar_mensaje(msg.telefono, "assistant", mensaje_escalacion)
     else:
         await liberar_evento(evento_id)
