@@ -141,9 +141,11 @@ TOOLS = [
         "name": "consultar_pedido",
         "description": (
             "Busca un pedido ya realizado por su numero (el que ve el cliente, no un "
-            "id interno) y devuelve su estado de pago y de envio. Usala cuando el "
-            "cliente pregunte por el estado de una compra y te haya dado el numero de "
-            "pedido."
+            "id interno) y devuelve su estado de pago y de envio, el transportista y, "
+            "si ya fue despachado, el codigo y el link de seguimiento. Si todavia no "
+            "se despacho, lo dice explicito. Usala SIEMPRE que el cliente pregunte "
+            "por el estado, el despacho o el seguimiento de una compra y te haya dado "
+            "el numero de pedido (con o sin '#'). Si no te dio el numero, pedisselo."
         ),
         "input_schema": {
             "type": "object",
@@ -476,6 +478,9 @@ async def generar_respuesta(
 
     pasos = 0
     cache_herramientas: dict = {}
+    # Texto que el modelo escribio JUNTO a una escalacion: ya es parte de lo que se le
+    # dice al cliente (ver mas abajo). Se junta aca y se antepone a la respuesta final.
+    texto_previo: list[str] = []
     try:
         respuesta = await _llamar()
 
@@ -487,6 +492,18 @@ async def generar_respuesta(
             mensajes.append({"role": "assistant", "content": respuesta.content})
 
             tool_use_blocks = [b for b in respuesta.content if b.type == "tool_use"]
+
+            # Normalmente el texto que acompana a una herramienta de consulta es relleno
+            # ("dejame buscar...") y se descarta: lo que vale es la respuesta final. Pero
+            # cuando el turno es SOLO una escalacion, el modelo suele escribir ahi el
+            # mensaje real para el cliente ("tu pedido todavia no salio...") y despues
+            # cerrar con una frase corta. Descartarlo dejaba al cliente con el cierre
+            # pelado ("ya avise al equipo") y sin el dato que habia preguntado.
+            if tool_use_blocks and all(tc.name == "escalar_a_humano" for tc in tool_use_blocks):
+                previo = _extraer_texto(respuesta)
+                if previo:
+                    texto_previo.append(previo)
+
             resultados = []
             for tc in tool_use_blocks:
                 logger.info(f"El modelo pidio la herramienta {tc.name} con {tc.input}")
@@ -509,6 +526,10 @@ async def generar_respuesta(
                         "motivo en este mensaje. Si el cliente preguntó otra cosa en "
                         "el mismo mensaje que vos sí podés responder con las otras "
                         "herramientas, respondésela con naturalidad en el mismo turno. "
+                        "Si antes de llamar a esta herramienta ya le escribiste al cliente "
+                        "la respuesta a lo que preguntó, ese texto SE LE VA A MOSTRAR igual: "
+                        "no lo repitas ni vuelvas a decir que avisaste al equipo; cerrá con "
+                        "una frase corta o con la respuesta a lo que falte. "
                         "Al mencionar que alguien lo va a contactar, no prometas un "
                         "tiempo exacto ni des un número de teléfono."
                     )
@@ -566,7 +587,8 @@ async def generar_respuesta(
             "Si pasa seguido, sube ANTHROPIC_MAX_TOKENS o acorta el system prompt."
         )
 
-    texto = _limpiar_formato_whatsapp(_extraer_texto(respuesta))
+    partes_texto = [p for p in (*texto_previo, _extraer_texto(respuesta)) if p]
+    texto = _limpiar_formato_whatsapp("\n\n".join(partes_texto))
     if not texto:
         logger.warning("El modelo devolvio una respuesta sin texto")
         return obtener_mensaje_fallback(), False, None

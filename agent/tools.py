@@ -288,10 +288,74 @@ async def consultar_pedido(numero_pedido: str) -> str:
     envio = estados_envio.get(pedido.get("shipping_status"), pedido.get("shipping_status", "-"))
     total = pedido.get("total", "-")
 
-    return (
+    lineas = [
         f"Pedido #{pedido.get('number')}: total ${total} | pago: {pago} | envio: {envio} | "
         f"estado general: {pedido.get('status', '-')}"
-    )
+    ]
+    lineas.extend(_lineas_de_envio(pedido))
+    return "\n".join(lineas)
+
+
+_ESTADOS_FULFILLMENT = {
+    "UNPACKED": "todavia sin preparar",
+    "IN_PREPARATION": "en preparacion",
+    "PACKED": "preparado, listo para despachar",
+    "DISPATCHED": "despachado",
+    "SHIPPED": "despachado",
+    "DELIVERED": "entregado",
+    "READY_FOR_PICKUP": "listo para retirar en el local",
+}
+
+
+def _lineas_de_envio(pedido: dict) -> list[str]:
+    """
+    Una linea por envio del pedido, con transportista, estado y seguimiento.
+
+    En esta version de la API de Tienda Nube el seguimiento vive en
+    fulfillments[].tracking_info (codigo + url) y NO en los campos clasicos
+    shipping_tracking_number/shipping_tracking_url, que ya no vienen. Se leen los
+    clasicos solo como respaldo para pedidos viejos. Si no hay codigo, se dice
+    explicito: es lo que le permite al agente contestar "todavia no fue despachado"
+    en vez de escalar a una persona por algo que ya puede responder.
+    """
+    fulfillments = pedido.get("fulfillments") or []
+    lineas = []
+    for i, f in enumerate(fulfillments, start=1):
+        envio = f.get("shipping") or {}
+        transportista = (envio.get("carrier") or {}).get("name") or ""
+        opcion = (envio.get("option") or {}).get("name") or ""
+        estado_crudo = (f.get("status") or "").upper()
+        estado = _ESTADOS_FULFILLMENT.get(estado_crudo, estado_crudo.lower() or "-")
+        seguimiento = f.get("tracking_info") or {}
+        codigo = (seguimiento.get("code") or "").strip()
+        url = (seguimiento.get("url") or "").strip()
+        lineas.append(_texto_envio(i, len(fulfillments), transportista, opcion, estado, codigo, url))
+
+    if not lineas:
+        # Pedido viejo o sin fulfillments: respaldo con los campos clasicos.
+        codigo = (pedido.get("shipping_tracking_number") or "").strip()
+        url = (pedido.get("shipping_tracking_url") or "").strip()
+        transportista = pedido.get("shipping_carrier_name") or ""
+        opcion = pedido.get("shipping_option") or ""
+        if codigo or url or transportista or opcion:
+            lineas.append(_texto_envio(1, 1, transportista, opcion, "-", codigo, url))
+    return lineas
+
+
+def _texto_envio(n, total, transportista, opcion, estado, codigo, url) -> str:
+    etiqueta = f"Envio {n}" if total > 1 else "Envio"
+    detalle = " - ".join(x for x in (transportista, opcion) if x) or "sin datos del transportista"
+    if codigo or url:
+        seguimiento = "seguimiento:"
+        if codigo:
+            seguimiento += f" codigo {codigo}"
+        if url:
+            seguimiento += f" | link {url}"
+    elif estado == _ESTADOS_FULFILLMENT["READY_FOR_PICKUP"]:
+        seguimiento = "seguimiento: no aplica, es retiro por el local (no se envia por transportista)"
+    else:
+        seguimiento = "seguimiento: todavia no hay codigo de seguimiento (el paquete aun no fue despachado)"
+    return f"{etiqueta}: {detalle} | estado: {estado} | {seguimiento}"
 
 
 def cargar_info_negocio() -> dict:
