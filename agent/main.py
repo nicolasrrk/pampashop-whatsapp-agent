@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
+from agent import catalogo
 from agent.brain import (
     generar_respuesta,
     obtener_mensaje_bienvenida,
@@ -113,7 +114,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.error(f"Proveedor de WhatsApp NO configurado: {error_configuracion}")
 
+    # La copia del catalogo (para buscar por color) se arma en segundo plano: tarda ~30 s
+    # y el servidor tiene que atender mensajes desde el primer segundo. Hasta que termine,
+    # la busqueda por color cae a la busqueda en vivo.
+    tarea_catalogo = asyncio.create_task(catalogo.mantener_actualizado())
+
     yield
+
+    tarea_catalogo.cancel()
 
 
 app = FastAPI(title="AgentKit — WhatsApp AI Agent", version="2.0.0", lifespan=lifespan)
@@ -143,6 +151,7 @@ async def health_check():
         # una ruta que no existe.
         "panel": "activo" if PANEL_TOKEN_CONFIGURADO else "sin PANEL_TOKEN",
         "version": VERSION_DESPLEGADA,
+        "catalogo": catalogo.resumen(),
     }
 
 

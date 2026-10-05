@@ -129,14 +129,21 @@ TOOLS = [
         "description": (
             "Busca productos en el catalogo real de PAMPA SHOP por nombre, marca o "
             "palabra clave (ej: 'sandalia vizzano negra', 'zapatilla nino'). Devuelve "
-            "una lista con id, nombre, marca, rango de precio y si tiene stock. "
+            "una lista con id, nombre, marca, rango de precio, si tiene stock y los "
+            "colores que tienen stock. "
             "Usala SIEMPRE que el cliente pregunte por un producto especifico, antes "
             "de dar cualquier dato de talle, precio o stock. "
             "Buscá UNA sola vez por producto, con el termino mas simple que lo "
             "identifique (la marca y el tipo de calzado alcanzan: 'zapatilla moleca'). "
-            "NO agregues el talle ni el color a la busqueda, porque el buscador "
-            "matchea por nombre y el talle no esta en el nombre: para saber si hay "
-            "un talle usá obtener_detalle_producto sobre el id que ya encontraste. "
+            "NO agregues el talle a la busqueda, porque el buscador matchea por nombre "
+            "y el talle no esta en el nombre: para saber si hay un talle usá "
+            "obtener_detalle_producto sobre el id que ya encontraste. "
+            "Si el cliente pide un COLOR, pasalo en el parametro 'color' (no lo pongas "
+            "dentro de 'consulta'): el color no esta en el nombre del producto sino en "
+            "las variantes, y con 'color' se revisa todo el catalogo y se devuelven solo "
+            "los modelos que lo tienen con stock, junto con los talles. Podes buscar "
+            "solo por tipo y color, sin marca (ej: consulta 'sandalia taco alto', color "
+            "'azul') para encontrar opciones en cualquier marca. "
             "Si una busqueda no trae lo que esperabas, NO la repitas con variantes "
             "parecidas: contestale al cliente con lo que encontraste."
         ),
@@ -146,7 +153,11 @@ TOOLS = [
                 "consulta": {
                     "type": "string",
                     "description": "Texto de busqueda: nombre del producto, marca y/o tipo de calzado.",
-                }
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Opcional. Color pedido por el cliente (ej: 'azul', 'negro', 'nude'). Solo trae modelos que lo tengan con stock.",
+                },
             },
             "required": ["consulta"],
         },
@@ -254,7 +265,7 @@ TOOLS = [
 # como escalado, y el telefono no puede salir de lo que diga el modelo — sale del
 # backend. Se maneja aparte, en el propio loop de generar_respuesta.
 _HERRAMIENTAS = {
-    "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"]),
+    "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"], i.get("color")),
     "comparar_con_fotos_del_catalogo": lambda i: comparar_con_fotos_del_catalogo(i["consultas"]),
     "consultar_guia_talles": lambda i: consultar_guia_talles(i["marca"]),
     "obtener_detalle_producto": lambda i: obtener_detalle_producto(i["product_id"]),
