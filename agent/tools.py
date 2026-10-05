@@ -13,8 +13,11 @@ Todas las funciones son de solo lectura (scopes read_products, read_orders,
 read_customers, read_content) — el agente nunca modifica nada en Tienda Nube.
 """
 
+import asyncio
+import base64
 import logging
 import os
+import re
 
 import httpx
 import yaml
@@ -89,23 +92,20 @@ async def _consultar_productos_tienda_nube(params: dict) -> list[dict] | None:
     return r.json()
 
 
-async def buscar_productos_tienda_nube(consulta: str) -> str:
+async def _buscar_productos_crudos(consulta: str) -> list[dict] | None:
     """
-    Busca productos en el catalogo real de PAMPA SHOP por nombre, tag o SKU.
+    La busqueda de productos en si, devolviendo los productos tal cual los entrega
+    Tienda Nube (hasta 10). None si hubo un error de red o de la API; lista vacia si
+    simplemente no hay coincidencias.
 
-    Devuelve una lista compacta (nombre, marca, id, rango de precio, si tiene stock)
-    para que el modelo elija el producto correcto y despues pida el detalle completo
-    con obtener_detalle_producto. No devuelve la descripcion completa aca a proposito,
-    para no gastar de mas el contexto de la conversacion.
+    La comparten buscar_productos_tienda_nube (que la formatea como texto) y
+    comparar_con_fotos_del_catalogo (que ademas necesita las imagenes de cada producto).
     """
-    if not TIENDANUBE_STORE_ID or not TIENDANUBE_ACCESS_TOKEN:
-        return "No puedo consultar el catalogo ahora mismo: falta la conexion con Tienda Nube."
-
     productos = await _consultar_productos_tienda_nube(
         {"q": consulta, "published": "true", "per_page": 10}
     )
     if productos is None:
-        return "No pude consultar el catalogo ahora mismo. Probemos de nuevo en un momento."
+        return None
 
     if not productos:
         # Respaldo: probamos palabra por palabra, porque el "q" de Tiendanube exige
@@ -147,27 +147,177 @@ async def buscar_productos_tienda_nube(consulta: str) -> str:
 
         productos = candidatos[:10]
 
+    return productos
+
+
+async def buscar_productos_tienda_nube(consulta: str) -> str:
+    """
+    Busca productos en el catalogo real de PAMPA SHOP por nombre, tag o SKU.
+
+    Devuelve una lista compacta (nombre, marca, id, rango de precio, si tiene stock)
+    para que el modelo elija el producto correcto y despues pida el detalle completo
+    con obtener_detalle_producto. No devuelve la descripcion completa aca a proposito,
+    para no gastar de mas el contexto de la conversacion.
+    """
+    if not TIENDANUBE_STORE_ID or not TIENDANUBE_ACCESS_TOKEN:
+        return "No puedo consultar el catalogo ahora mismo: falta la conexion con Tienda Nube."
+
+    productos = await _buscar_productos_crudos(consulta)
+    if productos is None:
+        return "No pude consultar el catalogo ahora mismo. Probemos de nuevo en un momento."
+
     if not productos:
         return f"No encontre productos que coincidan con '{consulta}' en el catalogo."
 
-    lineas = []
-    for p in productos:
-        nombre = _texto_o_vacio(p.get("name"))
-        marca = p.get("brand") or ""
-        variantes = p.get("variants") or []
-        precios = [float(v["price"]) for v in variantes if v.get("price")]
-        hay_stock = any((v.get("stock") or 0) > 0 for v in variantes if v.get("stock_management"))
-        rango_precio = f"${min(precios):,.0f}".replace(",", ".") if precios else "sin precio"
-        if precios and max(precios) != min(precios):
-            rango_precio += f" a ${max(precios):,.0f}".replace(",", ".")
-        link = p.get("canonical_url") or ""
-        lineas.append(
-            f"- id={p['id']} | {nombre} ({marca}) | precio: {rango_precio} | "
-            f"{'con stock' if hay_stock else 'sin stock'}"
-            + (f" | link: {link}" if link else "")
+    return "\n".join(_linea_producto(p) for p in productos)
+
+
+def _tiene_stock(p: dict) -> bool:
+    variantes = p.get("variants") or []
+    return any((v.get("stock") or 0) > 0 for v in variantes if v.get("stock_management"))
+
+
+def _linea_producto(p: dict) -> str:
+    """Una linea compacta por producto: id, nombre, marca, precio, stock y link."""
+    nombre = _texto_o_vacio(p.get("name"))
+    marca = p.get("brand") or ""
+    precios = [float(v["price"]) for v in (p.get("variants") or []) if v.get("price")]
+    rango_precio = f"${min(precios):,.0f}".replace(",", ".") if precios else "sin precio"
+    if precios and max(precios) != min(precios):
+        rango_precio += f" a ${max(precios):,.0f}".replace(",", ".")
+    link = p.get("canonical_url") or ""
+    return (
+        f"- id={p['id']} | {nombre} ({marca}) | precio: {rango_precio} | "
+        f"{'con stock' if _tiene_stock(p) else 'sin stock'}"
+        + (f" | link: {link}" if link else "")
+    )
+
+
+# ── Busqueda por foto ────────────────────────────────────────────────────────
+# Tienda Nube busca solo por texto, asi que una foto no se puede "buscar". Lo que si se
+# puede es traer varios candidatos por texto y dejar que el modelo los COMPARE a ojo
+# contra la foto del cliente: es lo que hace comparar_con_fotos_del_catalogo.
+
+_MAX_BUSQUEDAS_FOTO = 4
+_MAX_CANDIDATOS_FOTO = 8
+_MAX_BYTES_FOTO = 450_000
+_TIPOS_IMAGEN = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+def _foto_principal(p: dict) -> str | None:
+    """URL de la foto principal del producto (la de menor 'position'), o None si no tiene."""
+    imagenes = [i for i in (p.get("images") or []) if i.get("src")]
+    if not imagenes:
+        return None
+    return min(imagenes, key=lambda i: i.get("position") or 99)["src"]
+
+
+async def _descargar_foto(cliente: httpx.AsyncClient, src: str) -> dict | None:
+    """
+    Baja la foto de un producto como bloque de imagen para Claude, o None si falla.
+
+    Las URLs de Tienda Nube llevan el tamaño en el nombre (...-1024-1024.jpg). Se pide la
+    version de 480 px de ancho: alcanza para distinguir tiras, taco y color, y tiene ~30%
+    menos pixeles que la de 1024 -- que es lo que se paga en tokens, por cada una de las
+    hasta 8 fotos. Si esa version no existe se prueba con la URL original.
+    """
+    # Algunos productos tienen la foto en PNG, que pesa ~500 KB incluso a 480 px: si la
+    # primera medida se pasa del tope se prueba con una mas chica antes de rendirse.
+    medidas = [re.sub(r"-\d+-\d+(\.\w+)$", rf"-{ancho}-0\1", src) for ancho in (480, 320, 240)]
+    motivo = "sin intentos"
+    for url in dict.fromkeys((*medidas, src)):
+        try:
+            r = await cliente.get(url)
+        except httpx.HTTPError as e:
+            motivo = f"error de red {type(e).__name__}"
+            continue
+        tipo = r.headers.get("content-type", "").split(";")[0].strip()
+        if r.status_code != 200 or tipo not in _TIPOS_IMAGEN or len(r.content) > _MAX_BYTES_FOTO:
+            motivo = f"status={r.status_code} tipo={tipo} bytes={len(r.content)}"
+            continue
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": tipo,
+                "data": base64.standard_b64encode(r.content).decode("ascii"),
+            },
+        }
+    logger.warning(f"No se pudo bajar la foto de un candidato ({src[-60:]}): {motivo}")
+    return None
+
+
+async def comparar_con_fotos_del_catalogo(consultas: list[str]) -> list[dict] | str:
+    """
+    Para cuando el cliente manda la foto de un calzado: busca varios candidatos en el
+    catalogo (una busqueda por cada texto de 'consultas') y devuelve, de cada uno, sus
+    datos y su foto, para que el modelo los compare visualmente con la del cliente.
+
+    Devuelve una lista de bloques (texto + imagen) en vez de un string: es el formato que
+    acepta un tool_result para mostrarle imagenes al modelo.
+    """
+    if not TIENDANUBE_STORE_ID or not TIENDANUBE_ACCESS_TOKEN:
+        return "No puedo consultar el catalogo ahora mismo: falta la conexion con Tienda Nube."
+
+    consultas = [c.strip() for c in (consultas or []) if isinstance(c, str) and c.strip()]
+    consultas = list(dict.fromkeys(consultas))[:_MAX_BUSQUEDAS_FOTO]
+    if not consultas:
+        return "Necesito al menos una busqueda de texto para traer candidatos."
+
+    resultados = await asyncio.gather(*(_buscar_productos_crudos(c) for c in consultas))
+    if all(r is None for r in resultados):
+        return "No pude consultar el catalogo ahora mismo. Probemos de nuevo en un momento."
+
+    # Un producto que aparece en varias busquedas es mas probable que sea el correcto;
+    # a igualdad, primero los que tienen stock (no sirve proponer algo que no hay).
+    apariciones: dict = {}
+    productos: dict = {}
+    for lista in resultados:
+        for p in lista or []:
+            productos.setdefault(p["id"], p)
+            apariciones[p["id"]] = apariciones.get(p["id"], 0) + 1
+    if not productos:
+        return "No encontre productos parecidos en el catalogo con esas busquedas."
+
+    ordenados = sorted(
+        productos.values(),
+        key=lambda p: (-apariciones[p["id"]], 0 if _tiene_stock(p) else 1),
+    )[:_MAX_CANDIDATOS_FOTO]
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as cliente:
+        fotos = await asyncio.gather(
+            *(
+                _descargar_foto(cliente, src) if (src := _foto_principal(p)) else asyncio.sleep(0, None)
+                for p in ordenados
+            )
         )
 
-    return "\n".join(lineas)
+    bloques: list[dict] = [
+        {
+            "type": "text",
+            "text": f"Candidatos del catalogo ({len(ordenados)}), cada uno con su foto principal:",
+        }
+    ]
+    for n, (p, foto) in enumerate(zip(ordenados, fotos), start=1):
+        linea = _linea_producto(p).removeprefix("- ")
+        bloques.append(
+            {"type": "text", "text": f"Candidato {n}: {linea}" + ("" if foto else " | (sin foto disponible)")}
+        )
+        if foto:
+            bloques.append(foto)
+    bloques.append(
+        {
+            "type": "text",
+            "text": (
+                "Compara cada foto con la que mando el cliente: tipo de calzado, color, forma "
+                "de la punta, taco o base, tiras, cierres, materiales. Elegi los 1 a 3 mas "
+                "parecidos (a igual parecido, el que tenga stock) y mostraselos con su link. "
+                "Si ninguno se parece de verdad, decilo con honestidad en vez de forzar uno. "
+                "Nunca afirmes que es exactamente el mismo producto."
+            ),
+        }
+    )
+    return bloques
 
 
 async def obtener_detalle_producto(product_id: str) -> str:

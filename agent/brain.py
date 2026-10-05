@@ -29,6 +29,7 @@ from agent.escalacion import escalar_desde_agente
 from agent.memory import obtener_config
 from agent.tools import (
     buscar_productos_tienda_nube,
+    comparar_con_fotos_del_catalogo,
     consultar_guia_talles,
     consultar_pedido,
     obtener_detalle_producto,
@@ -90,6 +91,39 @@ def _calcular_costo(modelo: str, tokens_entrada: int, tokens_salida: int) -> flo
 # descripciones son los que el modelo lee para decidir CUANDO usarlas: cuanto mas clara
 # la descripcion, menos se equivoca.
 TOOLS = [
+    {
+        "name": "comparar_con_fotos_del_catalogo",
+        "description": (
+            "Para cuando el cliente MANDA LA FOTO de un calzado y quiere algo igual o "
+            "parecido. Tienda Nube no busca por imagen, asi que esta herramienta trae "
+            "varios candidatos del catalogo (una busqueda de texto por cada elemento de "
+            "'consultas') y te devuelve, de cada uno, sus datos Y SU FOTO, para que los "
+            "compares a ojo con la del cliente y elijas los mas parecidos. Mira la foto "
+            "del cliente primero y arma 2 a 4 busquedas cortas y distintas entre si. "
+            "El catalogo nombra el tipo de calzado SOLO con estas palabras: zapatilla, "
+            "sandalia, zapato, bota, botita, borcego, zueco, ojota, chatita, chinela, "
+            "guillermina, nautico, pantufla, mocasin, bucanera, texana. Usalas tal cual "
+            "(no inventes otras como 'suela track' o 'plataforma' sola). Pone UNA "
+            "busqueda con solo el tipo y el publico (ej: 'borcego nina', 'sandalia "
+            "mujer'), otra con el tipo y el color, y si dudas entre dos tipos parecidos "
+            "(ej: bota y borcego, zueco y chinela) busca los dos. No pongas talle ni "
+            "precio. Usala en lugar de buscar_productos_tienda_nube cuando hay una foto; "
+            "si el cliente no mando foto, no la uses."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "consultas": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "Entre 1 y 4 busquedas de texto cortas, distintas entre si, que describan el calzado de la foto.",
+                }
+            },
+            "required": ["consultas"],
+        },
+    },
     {
         "name": "buscar_productos_tienda_nube",
         "description": (
@@ -221,6 +255,7 @@ TOOLS = [
 # backend. Se maneja aparte, en el propio loop de generar_respuesta.
 _HERRAMIENTAS = {
     "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"]),
+    "comparar_con_fotos_del_catalogo": lambda i: comparar_con_fotos_del_catalogo(i["consultas"]),
     "consultar_guia_talles": lambda i: consultar_guia_talles(i["marca"]),
     "obtener_detalle_producto": lambda i: obtener_detalle_producto(i["product_id"]),
     "consultar_pedido": lambda i: consultar_pedido(i["numero_pedido"]),
@@ -373,9 +408,12 @@ def _extraer_texto(respuesta) -> str:
     return "\n".join(p for p in partes if p).strip()
 
 
-async def _ejecutar_herramienta(nombre: str, entrada: dict, cache: dict | None = None) -> str:
+async def _ejecutar_herramienta(
+    nombre: str, entrada: dict, cache: dict | None = None
+) -> str | list[dict]:
     """
-    Ejecuta una herramienta pedida por el modelo y devuelve el resultado como texto.
+    Ejecuta una herramienta pedida por el modelo y devuelve el resultado: texto, o una
+    lista de bloques (texto + imagen) cuando la herramienta le muestra fotos al modelo.
 
     "cache" vive lo que dura UN mensaje del cliente y guarda lo que ya se consulto.
     El modelo tiende a repetir la misma busqueda con variantes ("moleca", "zapatilla
