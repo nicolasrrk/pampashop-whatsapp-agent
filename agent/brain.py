@@ -32,6 +32,7 @@ from agent.tools import (
     comparar_con_fotos_del_catalogo,
     consultar_guia_talles,
     consultar_pedido,
+    fotos_de_producto,
     obtener_detalle_producto,
 )
 
@@ -91,6 +92,29 @@ def _calcular_costo(modelo: str, tokens_entrada: int, tokens_salida: int) -> flo
 # descripciones son los que el modelo lee para decidir CUANDO usarlas: cuanto mas clara
 # la descripcion, menos se equivoca.
 TOOLS = [
+    {
+        "name": "enviar_fotos_producto",
+        "description": (
+            "Manda por WhatsApp hasta 3 fotos de UN producto al cliente, como imagenes "
+            "dentro del chat (se envian justo despues de tu mensaje de texto). Usala "
+            "cuando el cliente pida ver fotos o imagenes de un modelo ('me pasas fotos', "
+            "'tenes fotos?', 'como es?', 'quiero verlo'), una vez que sabes de que "
+            "producto habla: el id sale de buscar_productos_tienda_nube o de un producto "
+            "que ya le mostraste en la conversacion. Una llamada por modelo. NUNCA le "
+            "digas que no podes mandar fotos, y no pegues links de las fotos: solo avisale "
+            "que se las mandas por aca."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product_id": {
+                    "type": "string",
+                    "description": "Id del producto (el numero que figura como 'id=' en los resultados de busqueda).",
+                }
+            },
+            "required": ["product_id"],
+        },
+    },
     {
         "name": "comparar_con_fotos_del_catalogo",
         "description": (
@@ -419,6 +443,41 @@ def _extraer_texto(respuesta) -> str:
     return "\n".join(p for p in partes if p).strip()
 
 
+# Tope de modelos distintos con fotos en una misma respuesta (3 fotos cada uno): si el
+# cliente pide fotos de varios, mas de dos llenan el chat; del resto va el link.
+_MAX_MODELOS_CON_FOTOS = 2
+
+
+async def _preparar_fotos(product_id: str, acumuladas: list[dict]) -> str:
+    """
+    Busca las fotos de un producto y las deja en 'acumuladas' para que main.py las mande
+    despues del texto. Devuelve lo que el modelo tiene que saber: que se van a mandar, o
+    por que no.
+    """
+    ya = {f["producto_id"] for f in acumuladas}
+    if product_id in ya:
+        return "Las fotos de ese producto ya se van a mandar en este mensaje."
+    if len(ya) >= _MAX_MODELOS_CON_FOTOS:
+        return (
+            f"Ya se van a mandar fotos de {_MAX_MODELOS_CON_FOTOS} modelos en este mensaje: "
+            "para los demas pasale solo el link y ofrecele las fotos de a un modelo."
+        )
+
+    encontradas = await fotos_de_producto(product_id)
+    if isinstance(encontradas, str):
+        return encontradas
+
+    nombre, links = encontradas
+    for i, link in enumerate(links):
+        acumuladas.append({"producto_id": product_id, "url": link, "descripcion": nombre if i == 0 else ""})
+    return (
+        f"Listo: se le van a mandar {len(links)} fotos de '{nombre}' por WhatsApp, justo "
+        "despues de tu mensaje. NO pegues links de las fotos ni digas que no podes "
+        "mandarlas: avisale con naturalidad que se las mandas por aca (podes dejar tambien "
+        "el link del producto)."
+    )
+
+
 async def _ejecutar_herramienta(
     nombre: str, entrada: dict, cache: dict | None = None
 ) -> str | list[dict]:
@@ -475,7 +534,11 @@ async def generar_respuesta(
             manda junto con el texto en el mismo mensaje del usuario.
 
     Returns:
-        (texto, es_respuesta_real, uso)
+        (texto, es_respuesta_real, uso, fotos)
+
+        "fotos" es la lista de fotos de producto que el modelo pidio mandar con
+        enviar_fotos_producto: [{"url", "descripcion"}]. No se mandan desde aca: main.py
+        las envia DESPUES del mensaje de texto, para que lleguen en orden.
 
         "es_respuesta_real" es False cuando lo que se devuelve es un aviso tecnico
         (error, saturacion o fallback) y no una respuesta del agente. main.py lo usa
@@ -488,7 +551,7 @@ async def generar_respuesta(
         alimente el dashboard de metricas.
     """
     if not imagen and (not mensaje or len(mensaje.strip()) < 2):
-        return obtener_mensaje_fallback(), False, None
+        return obtener_mensaje_fallback(), False, None, []
 
     system_prompt = await obtener_system_prompt_activo()
     mensajes: list[dict] = [{"role": m["role"], "content": m["content"]} for m in historial]
@@ -530,6 +593,9 @@ async def generar_respuesta(
     # Texto que el modelo escribio JUNTO a una escalacion: ya es parte de lo que se le
     # dice al cliente (ver mas abajo). Se junta aca y se antepone a la respuesta final.
     texto_previo: list[str] = []
+    # Fotos de producto que el modelo pidio mandar (ver enviar_fotos_producto): se
+    # devuelven junto con la respuesta y las envia main.py despues del texto.
+    fotos_a_enviar: list[dict] = []
     try:
         respuesta = await _llamar()
 
@@ -585,6 +651,13 @@ async def generar_respuesta(
                     resultados.append({"type": "tool_result", "tool_use_id": tc.id, "content": resultado})
                     continue
 
+                if tc.name == "enviar_fotos_producto":
+                    # Igual que escalar_a_humano, no va en _HERRAMIENTAS porque tiene estado:
+                    # acumula las fotos que main.py va a mandar despues del texto.
+                    resultado = await _preparar_fotos(str(tc.input.get("product_id", "")), fotos_a_enviar)
+                    resultados.append({"type": "tool_result", "tool_use_id": tc.id, "content": resultado})
+                    continue
+
                 # tc.input ya llega como dict: a diferencia del formato estilo OpenAI,
                 # Claude no manda los argumentos como un string JSON para parsear.
                 resultado = await _ejecutar_herramienta(tc.name, tc.input, cache_herramientas)
@@ -625,10 +698,10 @@ async def generar_respuesta(
         # minuto. El SDK ya reintenta con espera, asi que si igual llego hasta aca es
         # que sigue saturado: no tiene sentido hacer esperar mas al cliente en silencio.
         logger.error(f"Rate limit de Anthropic ({MODELO}): {e}")
-        return obtener_mensaje_saturado(), False, None
+        return obtener_mensaje_saturado(), False, None, []
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error llamando a Claude: {e}")
-        return obtener_mensaje_error(), False, None
+        return obtener_mensaje_error(), False, None, []
 
     if respuesta.stop_reason == "max_tokens":
         logger.warning(
@@ -640,7 +713,7 @@ async def generar_respuesta(
     texto = _limpiar_formato_whatsapp("\n\n".join(partes_texto))
     if not texto:
         logger.warning("El modelo devolvio una respuesta sin texto")
-        return obtener_mensaje_fallback(), False, None
+        return obtener_mensaje_fallback(), False, None, []
 
     uso_api = respuesta.usage
     tokens_cache = getattr(uso_api, "cache_read_input_tokens", 0) or 0
@@ -658,4 +731,4 @@ async def generar_respuesta(
         "pasos_herramientas": pasos,
         "costo_usd": costo,
     }
-    return texto, True, uso
+    return texto, True, uso, fotos_a_enviar

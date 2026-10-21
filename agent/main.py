@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent import catalogo
+from agent.envio_fotos import enviar_fotos, nota_de_fotos
 from agent.brain import (
     generar_respuesta,
     obtener_mensaje_bienvenida,
@@ -280,13 +281,14 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # llama al modelo, se responde directo con el aviso. Ver providers/meta.py.
             tipo_no_soportado = msg.contexto.get("tipo_no_soportado")
             uso = None
+            fotos: list[dict] = []
             if tipo_no_soportado:
                 respuesta, es_respuesta_real = obtener_mensaje_tipo_no_soportado(tipo_no_soportado), True
             else:
                 # El historial se lee ANTES de guardar el mensaje actual: brain.py
                 # agrega el mensaje nuevo al final, y asi no queda duplicado.
                 historial = await obtener_historial(msg.telefono)
-                respuesta, es_respuesta_real, uso = await generar_respuesta(
+                respuesta, es_respuesta_real, uso, fotos = await generar_respuesta(
                     msg.texto, historial, telefono=msg.telefono, imagen=msg.contexto.get("imagen")
                 )
 
@@ -294,7 +296,7 @@ async def procesar_mensaje(msg: MensajeEntrante):
             # esperar aprobacion solo deja al cliente sin nada mas tiempo.
             if es_respuesta_real and MODO_ENVIO == "borrador":
                 await crear_borrador(
-                    msg.telefono, msg.texto, respuesta, _contexto_liviano(msg, imagen_id)
+                    msg.telefono, msg.texto, respuesta, _contexto_liviano(msg, imagen_id, fotos)
                 )
                 logger.info(
                     f"Borrador creado para {msg.telefono}. Revisar con: python scripts/bandeja.py"
@@ -312,12 +314,21 @@ async def procesar_mensaje(msg: MensajeEntrante):
                 await liberar_evento(evento_id)
                 return
 
+            # Las fotos de producto van DESPUES del texto, para que lleguen en orden.
+            nota_fotos = ""
+            if fotos:
+                nota_fotos = nota_de_fotos(await enviar_fotos(proveedor, msg.telefono, fotos, msg.contexto))
+
             # Solo se guarda en el historial lo que de verdad es conversacion. Los avisos
             # tecnicos ("estoy teniendo problemas") no son un turno del agente: guardarlos
             # los deja contaminando el contexto de todos los mensajes que vengan despues.
             if es_respuesta_real:
                 await guardar_mensaje(msg.telefono, "user", msg.texto, imagen_id=imagen_id)
-                await guardar_mensaje(msg.telefono, "assistant", respuesta)
+                # La nota de las fotos queda en el mensaje guardado: asi el modelo sabe en
+                # el turno siguiente que ya se las mando, y el panel lo muestra en el chat.
+                await guardar_mensaje(
+                    msg.telefono, "assistant", f"{respuesta}\n{nota_fotos}" if nota_fotos else respuesta
+                )
                 # "uso" es None para los avisos de tipo no soportado (no hubo llamada a
                 # Claude) y para cualquier caso que ya se filtro arriba: solo se guarda
                 # cuando de verdad se consumieron tokens, para que el dashboard de
@@ -390,15 +401,20 @@ async def _guardar_imagen_entrante(msg: MensajeEntrante) -> int | None:
         return None
 
 
-def _contexto_liviano(msg: MensajeEntrante, imagen_id: int | None = None) -> str:
+def _contexto_liviano(
+    msg: MensajeEntrante, imagen_id: int | None = None, fotos: list[dict] | None = None
+) -> str:
     """
     El contexto del mensaje serializado para guardarlo en un borrador, SIN los bytes de
     la foto: la imagen en base64 pesa cientos de KB y ya esta guardada aparte
-    (tabla imagenes), asi que el borrador solo lleva su id.
+    (tabla imagenes), asi que el borrador solo lleva su id. Si el bot decidio mandar
+    fotos de producto, tambien van aca, para mandarlas cuando alguien apruebe el borrador.
     """
     contexto = {k: v for k, v in msg.contexto.items() if k != "imagen"}
     if imagen_id:
         contexto["imagen_id"] = imagen_id
+    if fotos:
+        contexto["fotos"] = fotos
     return json.dumps(contexto)
 
 

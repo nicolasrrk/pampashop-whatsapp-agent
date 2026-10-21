@@ -45,6 +45,22 @@ class ProveedorWhatsApp(ABC):
         """Envia un mensaje de texto. Retorna True si salio bien."""
         ...
 
+    async def enviar_imagen(
+        self,
+        telefono: str,
+        url: str,
+        descripcion: str = "",
+        contexto: dict | None = None,
+    ) -> bool:
+        """
+        Envia una imagen a partir de un link publico, con un pie de foto opcional.
+        Retorna True si salio bien.
+
+        No es abstracto a proposito: un proveedor que no sabe mandar imagenes simplemente
+        devuelve False y el bot sigue funcionando solo con texto.
+        """
+        return False
+
     async def enviar_plantilla(
         self, telefono: str, nombre: str, idioma: str, parametros: list[str]
     ) -> bool:

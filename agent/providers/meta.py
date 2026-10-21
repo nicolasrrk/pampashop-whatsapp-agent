@@ -312,6 +312,52 @@ class ProveedorMeta(ProveedorWhatsApp):
         logger.error(f"Meta rechazo el envio [{r.status_code}]: {r.text[:500]}")
         return False
 
+    async def enviar_imagen(
+        self,
+        telefono: str,
+        url: str,
+        descripcion: str = "",
+        contexto: dict | None = None,
+    ) -> bool:
+        """
+        Envia una imagen por la Cloud API a partir de un link publico (Meta la descarga de
+        ahi). Solo JPEG y PNG, hasta 5 MB: otros formatos (ej. WebP) los rechaza. Como el
+        texto libre, solo se puede mandar dentro de las 24 horas del ultimo mensaje del
+        cliente.
+        """
+        if not self.access_token or not self.phone_number_id:
+            logger.error("No se puede enviar la imagen: faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID")
+            return False
+
+        imagen: dict = {"link": url}
+        if descripcion:
+            imagen["caption"] = descripcion[:1024]  # tope de Meta para el pie de foto
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as cliente:
+                r = await cliente.post(
+                    f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages",
+                    json={
+                        "messaging_product": "whatsapp",
+                        "to": _numero_para_enviar(telefono),
+                        "type": "image",
+                        "image": imagen,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+        except httpx.HTTPError as e:
+            logger.error(f"Error de red enviando la imagen a Meta: {e}")
+            return False
+
+        if r.status_code == 200:
+            return True
+
+        logger.error(f"Meta rechazo la imagen [{r.status_code}]: {r.text[:500]}")
+        return False
+
     async def enviar_plantilla(
         self, telefono: str, nombre: str, idioma: str, parametros: list[str]
     ) -> bool:

@@ -284,6 +284,54 @@ def _linea_producto(p: dict) -> str:
     )
 
 
+# ── Envio de fotos de un producto al cliente ─────────────────────────────────
+
+_MAX_FOTOS_ENVIO = 3
+# WhatsApp solo acepta imagenes JPEG y PNG: una WebP la rechaza.
+_EXTENSIONES_FOTO_WHATSAPP = (".jpg", ".jpeg", ".png")
+
+
+async def fotos_de_producto(product_id: str) -> tuple[str, list[str]] | str:
+    """
+    Nombre y links de las primeras fotos de UN producto (hasta _MAX_FOTOS_ENVIO), en el
+    orden en que las muestra la tienda y solo en formatos que WhatsApp acepta. Devuelve
+    un texto de error (para el modelo) si no se pudo.
+
+    Las fotos NO se mandan desde aca: el envio lo hace main.py despues del mensaje de
+    texto, para que le lleguen al cliente en orden (primero la respuesta, despues las fotos).
+    """
+    if not TIENDANUBE_STORE_ID or not TIENDANUBE_ACCESS_TOKEN:
+        return "No puedo buscar las fotos ahora mismo: falta la conexion con Tienda Nube."
+
+    url = f"{TIENDANUBE_BASE_URL}/{TIENDANUBE_STORE_ID}/products/{product_id}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as cliente:
+            r = await cliente.get(url, headers=_headers())
+    except httpx.HTTPError as e:
+        logger.error(f"Error de red buscando las fotos del producto {product_id}: {e}")
+        return "No pude buscar las fotos ahora mismo. Probemos de nuevo en un momento."
+
+    if r.status_code == 404:
+        return f"No encontre ningun producto con id {product_id}."
+    if r.status_code != 200:
+        logger.error(f"Tienda Nube rechazo las fotos del producto [{r.status_code}]: {r.text[:300]}")
+        return "No pude buscar las fotos ahora mismo."
+
+    p = r.json()
+    imagenes = sorted(
+        (i for i in (p.get("images") or []) if i.get("src")),
+        key=lambda i: i.get("position") or 99,
+    )
+    links = [
+        i["src"]
+        for i in imagenes
+        if i["src"].split("?")[0].lower().endswith(_EXTENSIONES_FOTO_WHATSAPP)
+    ][:_MAX_FOTOS_ENVIO]
+    if not links:
+        return "Ese producto no tiene fotos que se puedan mandar por WhatsApp; pasale el link de la tienda."
+    return _texto_o_vacio(p.get("name")), links
+
+
 # ── Busqueda por foto ────────────────────────────────────────────────────────
 # Tienda Nube busca solo por texto, asi que una foto no se puede "buscar". Lo que si se
 # puede es traer varios candidatos por texto y dejar que el modelo los COMPARE a ojo

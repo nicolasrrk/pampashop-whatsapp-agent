@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 from agent.brain import cargar_system_prompt
+from agent.envio_fotos import enviar_fotos, nota_de_fotos
 from agent.memory import (
     alternar_bot,
     borrar_config,
@@ -189,7 +190,8 @@ async def accion_borrador(
     from agent.providers import obtener_proveedor
 
     contexto = json.loads(borrador.contexto_json or "{}")
-    enviado = await obtener_proveedor().enviar_mensaje(borrador.telefono, texto, contexto)
+    proveedor = obtener_proveedor()
+    enviado = await proveedor.enviar_mensaje(borrador.telefono, texto, contexto)
 
     if not enviado:
         logger.error(f"Borrador {borrador_id}: no se pudo enviar, queda pendiente")
@@ -199,7 +201,13 @@ async def accion_borrador(
     await guardar_mensaje(
         borrador.telefono, "user", borrador.mensaje_cliente, imagen_id=contexto.get("imagen_id")
     )
-    await guardar_mensaje(borrador.telefono, "assistant", texto)
+    # Si el bot habia decidido mandar fotos de producto, salen ahora, despues del texto.
+    nota_fotos = nota_de_fotos(
+        await enviar_fotos(proveedor, borrador.telefono, contexto.get("fotos") or [], contexto)
+    )
+    await guardar_mensaje(
+        borrador.telefono, "assistant", f"{texto}\n{nota_fotos}" if nota_fotos else texto
+    )
     logger.info(f"Borrador {borrador_id} aprobado y enviado desde el panel")
     return {"ok": True, "estado": "enviado"}
 

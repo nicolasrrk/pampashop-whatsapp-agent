@@ -105,7 +105,7 @@ async def main():
         historial = await obtener_historial(TELEFONO_TEST)
 
         print("\nPAMPA: ", end="", flush=True)
-        respuesta, es_respuesta_real, uso = await generar_respuesta(mensaje, historial, telefono=TELEFONO_TEST)
+        respuesta, es_respuesta_real, uso, fotos = await generar_respuesta(mensaje, historial, telefono=TELEFONO_TEST)
         print(respuesta)
         if uso:
             print(
