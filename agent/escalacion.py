@@ -127,7 +127,7 @@ async def escalar_desde_agente(telefono: str, motivo: str, mensaje_cliente: str)
     saturaria al local con un aviso nuevo por la misma gestion.
     """
     if await debe_reavisar_escalacion(telefono, AVISO_ESCALACION_COOLDOWN):
-        await marcar_escalado(telefono)
+        await marcar_escalado(telefono, motivo=motivo, origen="agente")
         await avisar_canal_interno(telefono, mensaje_cliente, motivo or "el agente lo considero necesario")
         logger.info(f"{telefono} escalado por decision del agente: {motivo}")
     else:

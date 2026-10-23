@@ -428,7 +428,7 @@ async def _escalar_a_humano(
     cliente vea, asi que no tiene sentido frenarlo a esperar aprobacion.
     """
     mensaje_escalacion = obtener_mensaje_escalacion()
-    await marcar_escalado(msg.telefono)
+    await marcar_escalado(msg.telefono, motivo=f"palabra clave: {palabra}", origen="palabra_clave")
     await avisar_canal_interno(msg.telefono, msg.texto, f"palabra clave: {palabra}")
 
     if MODO_ENVIO == "borrador":

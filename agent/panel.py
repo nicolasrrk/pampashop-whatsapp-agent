@@ -16,12 +16,14 @@ operacion que scripts/bandeja.py, con los mismos pasos y en el mismo orden.
 import json
 import logging
 import os
+from datetime import date, datetime
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 from agent.brain import cargar_system_prompt
 from agent.envio_fotos import enviar_fotos, nota_de_fotos
+from agent.informes import resumen_a_xlsx, texto_resumen
 from agent.memory import (
     alternar_bot,
     borrar_config,
@@ -34,7 +36,11 @@ from agent.memory import (
     obtener_conversacion_completa,
     obtener_imagen,
     obtener_metricas,
+    obtener_resumen_semanal,
     resolver_escalado,
+    semanas_disponibles,
+    lunes_de_la_semana,
+    ZONA_ARGENTINA,
 )
 
 logger = logging.getLogger("agentkit")
@@ -112,6 +118,36 @@ async def datos_metricas(request: Request):
     """Todo lo que pinta el dashboard: mensajes, escalados, leads y consumo de Claude."""
     _verificar(request)
     return await obtener_metricas()
+
+
+def _lunes_pedido(semana: str | None) -> date:
+    """El lunes de la semana pedida (cualquier dia de esa semana sirve); sin dato, la semana en curso."""
+    if not semana:
+        return lunes_de_la_semana(datetime.now(ZONA_ARGENTINA).date())
+    try:
+        return lunes_de_la_semana(date.fromisoformat(semana))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="La semana tiene que ser una fecha AAAA-MM-DD")
+
+
+@router.get("/datos/resumen-semanal")
+async def datos_resumen_semanal(request: Request, semana: str | None = Query(None)):
+    """Personas atendidas por la IA y derivadas a una persona en una semana (lunes a domingo)."""
+    _verificar(request)
+    resumen = await obtener_resumen_semanal(_lunes_pedido(semana))
+    return {**resumen, "texto": texto_resumen(resumen), "semanas": semanas_disponibles()}
+
+
+@router.get("/descargar/resumen-semanal")
+async def descargar_resumen_semanal(request: Request, semana: str | None = Query(None)):
+    """El mismo resumen como archivo Excel."""
+    _verificar(request)
+    resumen = await obtener_resumen_semanal(_lunes_pedido(semana))
+    return Response(
+        content=resumen_a_xlsx(resumen),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="resumen-semanal-{resumen["desde"]}.xlsx"'},
+    )
 
 
 @router.get("/datos/prompt")
@@ -1237,6 +1273,32 @@ DASHBOARD_PAGINA = """<!doctype html>
   .barra-dia .num { font-size:11px; color:var(--suave); font-weight:600; font-variant-numeric:tabular-nums; }
   .barra-dia .etq { font-size:10px; color:var(--tenue); text-transform:uppercase; letter-spacing:.4px; }
 
+  /* ── Resumen semanal ── */
+  .resumen-cab { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+  .resumen-cab select {
+    border:1px solid var(--borde); border-radius:10px; padding:8px 12px; font:inherit; font-size:13px;
+    background:var(--panel); color:var(--texto); box-shadow:var(--sombra); cursor:pointer;
+  }
+  .resumen-cab .espacio { flex:1; }
+  .btn-resumen {
+    border:1px solid var(--borde); background:var(--panel); color:var(--texto); border-radius:10px;
+    padding:8px 14px; font:inherit; font-size:13px; font-weight:600; cursor:pointer; text-decoration:none;
+    box-shadow:var(--sombra); transition:border-color .15s;
+  }
+  .btn-resumen:hover { border-color:#c7cbd6; }
+  .btn-resumen.principal { background:var(--acento); border-color:var(--acento); color:#fff; }
+  .tabla-dias { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--borde);
+    border-radius:16px; overflow:hidden; box-shadow:var(--sombra); font-size:13px; }
+  .tabla-dias th { text-align:right; font-size:10.5px; text-transform:uppercase; letter-spacing:.8px;
+    color:var(--tenue); font-weight:600; padding:12px 14px; border-bottom:1px solid var(--borde); }
+  .tabla-dias td { text-align:right; padding:10px 14px; border-bottom:1px solid #eef0f4;
+    font-variant-numeric:tabular-nums; }
+  .tabla-dias th:first-child, .tabla-dias td:first-child { text-align:left; }
+  .tabla-dias tr:last-child td { border-bottom:0; }
+  .tabla-dias td.derivadas { color:#b3760f; font-weight:600; }
+  .nota-aprox { font-size:12px; color:#b3760f; background:#fdf6ea; border-radius:10px; padding:9px 12px; margin:0 0 14px; }
+  @media (max-width:560px) { .tabla-dias th, .tabla-dias td { padding:9px 8px; font-size:12px; } }
+
   .vacio { text-align:center; color:var(--tenue); padding:60px 16px; }
   .error { background:#fdf2f1; color:#d0483f; padding:12px 14px; border-radius:12px;
     border:1px solid rgba(208,72,63,.2); }
@@ -1254,6 +1316,19 @@ DASHBOARD_PAGINA = """<!doctype html>
   </div>
 </header>
 <main id="contenido"><p class="vacio">Cargando…</p></main>
+
+<main id="resumenSemanal" style="padding-top:0">
+  <div class="seccion">
+    <h2>Resumen semanal — personas atendidas y derivadas</h2>
+    <div class="resumen-cab">
+      <select id="selSemana" aria-label="Semana"></select>
+      <span class="espacio"></span>
+      <button class="btn-resumen" id="btnCopiar" type="button">Copiar resumen</button>
+      <a class="btn-resumen principal" id="btnDescargar" href="#">Descargar Excel</a>
+    </div>
+    <div id="resumenCuerpo"><p class="vacio" style="padding:30px 16px">Cargando…</p></div>
+  </div>
+</main>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -1359,6 +1434,68 @@ async function refrescar() {
 setInterval(refrescar, 15000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refrescar(); });
 refrescar();
+
+// ── Resumen semanal ─────────────────────────────────────────────────────────
+// Vive aparte del resto del dashboard a proposito: aquello se vuelve a pintar entero cada
+// 15 segundos, y eso reiniciaria la semana elegida en el selector.
+const selSemana = $("selSemana"), resumenCuerpo = $("resumenCuerpo");
+const btnCopiar = $("btnCopiar"), btnDescargar = $("btnDescargar");
+let textoResumen = "";
+const diasLargos = ["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
+const fechaCorta = (iso) => { const [a, m, d] = iso.split("-"); return d + "/" + m; };
+
+function pintarResumen(r) {
+  textoResumen = r.texto;
+  btnDescargar.href = "/panel/descargar/resumen-semanal?semana=" + r.desde;
+  selSemana.innerHTML = r.semanas.map(s =>
+    '<option value="' + s.desde + '"' + (s.desde === r.desde ? " selected" : "") + ">Semana del " + escapar(s.etiqueta) + "</option>"
+  ).join("");
+
+  const filas = r.por_dia.map(d => {
+    const fecha = new Date(d.dia + "T00:00:00");
+    return "<tr><td>" + diasLargos[fecha.getDay()] + " " + fechaCorta(d.dia) + "</td><td>" + nf(d.personas) +
+      "</td><td>" + nf(d.mensajes_cliente) + "</td><td>" + nf(d.respuestas_ia) +
+      '</td><td class="derivadas">' + nf(d.derivadas) + "</td></tr>";
+  }).join("");
+
+  resumenCuerpo.innerHTML =
+    (r.derivadas_aproximado ? '<p class="nota-aprox">Las derivaciones de esta semana son aproximadas: se registran una por una recién desde que se activó el seguimiento.</p>' : "") +
+    '<div class="grid" style="margin-bottom:16px">' +
+      '<div class="tarjeta c"><div class="etiqueta">Personas que escribieron</div><div class="valor">' + nf(r.personas_que_escribieron) +
+        '</div><div class="sub">contactos nuevos: <b>' + nf(r.contactos_nuevos) + "</b></div></div>" +
+      '<div class="tarjeta v"><div class="etiqueta">Atendidas por la IA</div><div class="valor">' + nf(r.atendidas_por_ia) +
+        '</div><div class="sub">solo con IA, sin derivar: <b>' + nf(r.atendidas_solo_por_ia) + "</b></div></div>" +
+      '<div class="tarjeta m"><div class="etiqueta">Derivadas a una persona</div><div class="valor">' + nf(r.derivadas_a_persona) +
+        '</div><div class="sub">con respuesta del equipo: <b>' + nf(r.con_respuesta_del_equipo) + "</b></div></div>" +
+      '<div class="tarjeta g"><div class="etiqueta">% de derivación</div><div class="valor">' + String(r.porcentaje_derivadas).replace(".", ",") +
+        '%</div><div class="sub">mensajes: <b>' + nf(r.mensajes_recibidos) + "</b> · respuestas IA: <b>" + nf(r.respuestas_de_ia) + "</b></div></div>" +
+    "</div>" +
+    '<table class="tabla-dias"><thead><tr><th>Día</th><th>Personas</th><th>Mensajes</th><th>Resp. IA</th><th>Derivadas</th></tr></thead><tbody>' +
+    filas + "</tbody></table>";
+}
+
+async function cargarResumen(semana) {
+  try {
+    pintarResumen(await pedir("/panel/datos/resumen-semanal" + (semana ? "?semana=" + semana : "")));
+  } catch (e) {
+    resumenCuerpo.innerHTML = '<p class="error">' + escapar(e.message) + "</p>";
+  }
+}
+
+selSemana.addEventListener("change", () => cargarResumen(selSemana.value));
+btnCopiar.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(textoResumen);
+  } catch (e) {
+    // Sin permiso de portapapeles (ej. pagina sin https): se copia con un campo temporal.
+    const t = document.createElement("textarea");
+    t.value = textoResumen; document.body.appendChild(t); t.select();
+    document.execCommand("copy"); t.remove();
+  }
+  btnCopiar.textContent = "¡Copiado!";
+  setTimeout(() => { btnCopiar.textContent = "Copiar resumen"; }, 1800);
+});
+cargarResumen("");
 </script>
 </body>
 </html>

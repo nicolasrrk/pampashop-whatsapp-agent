@@ -11,7 +11,7 @@ SQLite en local, PostgreSQL en produccion.
 import base64
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as hora_del_dia, timedelta, timezone
 
 from dotenv import load_dotenv
 from sqlalchemy import DateTime, Float, Integer, LargeBinary, String, Text, delete, func, inspect, select, text
@@ -140,6 +140,25 @@ class Lead(Base):
     )
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
+class Escalacion(Base):
+    """
+    Una derivacion a una persona del equipo: una fila por cada aviso interno que se mando.
+
+    Lead.escalado solo dice si un contacto esta escalado AHORA y Lead.ultimo_aviso_escalado
+    se pisa con cada aviso nuevo, asi que no alcanzan para contar cuantas personas se
+    derivaron en una semana. Esta tabla guarda cada evento con su fecha, para el resumen
+    semanal del dashboard (obtener_resumen_semanal).
+    """
+
+    __tablename__ = "escalaciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    motivo: Mapped[str] = mapped_column(Text, default="")
+    origen: Mapped[str] = mapped_column(String(20), default="")  # "palabra_clave" | "agente"
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora, index=True)
 
 
 class Uso(Base):
@@ -412,9 +431,10 @@ async def esta_escalado(telefono: str) -> bool:
         return bool(lead and lead.escalado)
 
 
-async def marcar_escalado(telefono: str):
+async def marcar_escalado(telefono: str, motivo: str = "", origen: str = ""):
     """
-    Marca el lead como escalado y registra el momento del aviso.
+    Marca el lead como escalado, registra el momento del aviso y deja constancia del
+    evento en la tabla escalaciones (para el resumen semanal).
 
     El momento se guarda ACA, no en un lugar aparte, porque hoy los dos llamadores
     (main.py y escalacion.py) llaman a esto siempre justo antes de mandar el aviso
@@ -428,7 +448,8 @@ async def marcar_escalado(telefono: str):
             lead.escalado = True
             lead.ultimo_aviso_escalado = ahora()
             lead.actualizado_en = ahora()
-            await session.commit()
+        session.add(Escalacion(telefono=telefono, motivo=(motivo or "")[:1000], origen=origen, creado_en=ahora()))
+        await session.commit()
 
 
 async def debe_reavisar_escalacion(telefono: str, cooldown: timedelta) -> bool:
@@ -686,6 +707,146 @@ async def borrar_config(clave: str):
     async with async_session() as session:
         await session.execute(delete(Configuracion).where(Configuracion.clave == clave))
         await session.commit()
+
+
+# ── Resumen semanal ────────────────────────────────────────────────────────
+
+# Argentina no usa horario de verano: UTC-3 fijo. La base guarda todo en UTC, pero una
+# semana "de lunes a domingo" tiene que cortar a la medianoche de Argentina.
+ZONA_ARGENTINA = timezone(timedelta(hours=-3))
+
+
+def _a_hora_argentina(momento: datetime) -> datetime:
+    # SQLite devuelve datetimes sin zona aunque se hayan guardado en UTC.
+    if momento.tzinfo is None:
+        momento = momento.replace(tzinfo=timezone.utc)
+    return momento.astimezone(ZONA_ARGENTINA)
+
+
+def lunes_de_la_semana(dia: date) -> date:
+    return dia - timedelta(days=dia.weekday())
+
+
+def semanas_disponibles(cantidad: int = 8) -> list[dict]:
+    """Las ultimas N semanas (la en curso primero), para el selector del dashboard."""
+    lunes_actual = lunes_de_la_semana(datetime.now(ZONA_ARGENTINA).date())
+    semanas = []
+    for i in range(cantidad):
+        lunes = lunes_actual - timedelta(weeks=i)
+        domingo = lunes + timedelta(days=6)
+        etiqueta = f"{lunes:%d/%m} al {domingo:%d/%m}" + (" (en curso)" if i == 0 else "")
+        semanas.append({"desde": lunes.isoformat(), "hasta": domingo.isoformat(), "etiqueta": etiqueta})
+    return semanas
+
+
+async def obtener_resumen_semanal(lunes: date) -> dict:
+    """
+    Cuantas personas atendio la IA y cuantas se derivaron a una persona, en la semana que
+    empieza ese lunes (hora de Argentina).
+
+    Todo se cuenta en PERSONAS distintas (telefonos), no en mensajes: es lo que se quiere
+    saber ("a cuantas personas contesta la IA y a cuantas deriva"). Los mensajes se
+    informan aparte, como contexto.
+    """
+    inicio = datetime.combine(lunes, hora_del_dia.min, tzinfo=ZONA_ARGENTINA)
+    fin = inicio + timedelta(days=7)
+    # Los parametros van en UTC porque asi estan guardadas las fechas en la base.
+    desde_utc, hasta_utc = inicio.astimezone(timezone.utc), fin.astimezone(timezone.utc)
+
+    async with async_session() as session:
+        mensajes = (
+            await session.execute(
+                select(Mensaje.telefono, Mensaje.role, Mensaje.remitente, Mensaje.timestamp).where(
+                    Mensaje.timestamp >= desde_utc, Mensaje.timestamp < hasta_utc
+                )
+            )
+        ).all()
+        derivaciones = (
+            await session.execute(
+                select(Escalacion.telefono, Escalacion.creado_en).where(
+                    Escalacion.creado_en >= desde_utc, Escalacion.creado_en < hasta_utc
+                )
+            )
+        ).all()
+        # Respaldo para antes de que existiera la tabla escalaciones: el ultimo aviso de
+        # cada contacto sigue en Lead. Como se cuentan personas distintas, si aparece en
+        # las dos fuentes no se duplica.
+        avisos_de_leads = (
+            await session.execute(
+                select(Lead.telefono, Lead.ultimo_aviso_escalado).where(
+                    Lead.ultimo_aviso_escalado >= desde_utc, Lead.ultimo_aviso_escalado < hasta_utc
+                )
+            )
+        ).all()
+        contactos_nuevos = (
+            await session.scalar(
+                select(func.count()).select_from(Lead).where(Lead.creado_en >= desde_utc, Lead.creado_en < hasta_utc)
+            )
+            or 0
+        )
+        primera_derivacion = await session.scalar(select(func.min(Escalacion.creado_en)))
+
+    dias = {
+        lunes + timedelta(days=i): {
+            "escribieron": set(), "atendidas_ia": set(), "derivadas": set(), "equipo": set(),
+            "mensajes_cliente": 0, "respuestas_ia": 0, "respuestas_equipo": 0,
+        }
+        for i in range(7)
+    }
+    for telefono, role, remitente, momento in mensajes:
+        dia = dias[_a_hora_argentina(momento).date()]
+        quien = remitente or ("cliente" if role == "user" else "bot")
+        if quien == "cliente":
+            dia["escribieron"].add(telefono)
+            dia["mensajes_cliente"] += 1
+        elif quien == "humano":
+            dia["respuestas_equipo"] += 1
+            dia["equipo"].add(telefono)
+        else:
+            dia["atendidas_ia"].add(telefono)
+            dia["respuestas_ia"] += 1
+    for telefono, momento in [*derivaciones, *avisos_de_leads]:
+        dias[_a_hora_argentina(momento).date()]["derivadas"].add(telefono)
+
+    def union(clave: str) -> set:
+        return set().union(*(d[clave] for d in dias.values()))
+
+    escribieron = union("escribieron")
+    # "Atendida por la IA" = escribio en la semana Y recibio al menos una respuesta de la IA.
+    atendidas_ia = union("atendidas_ia") & escribieron
+    derivadas = union("derivadas")
+    atendidas_equipo = union("equipo")
+    base = escribieron | derivadas
+
+    por_dia = [
+        {
+            "dia": d.isoformat(),
+            "personas": len(datos["escribieron"]),
+            "mensajes_cliente": datos["mensajes_cliente"],
+            "respuestas_ia": datos["respuestas_ia"],
+            "derivadas": len(datos["derivadas"]),
+        }
+        for d, datos in dias.items()
+    ]
+    return {
+        "desde": lunes.isoformat(),
+        "hasta": (lunes + timedelta(days=6)).isoformat(),
+        "personas_que_escribieron": len(escribieron),
+        "atendidas_por_ia": len(atendidas_ia),
+        "derivadas_a_persona": len(derivadas),
+        "atendidas_solo_por_ia": len(atendidas_ia - derivadas),
+        "con_respuesta_del_equipo": len(atendidas_equipo),
+        "porcentaje_derivadas": round(100 * len(derivadas) / len(base), 1) if base else 0.0,
+        "mensajes_recibidos": sum(d["mensajes_cliente"] for d in dias.values()),
+        "respuestas_de_ia": sum(d["respuestas_ia"] for d in dias.values()),
+        "respuestas_del_equipo": sum(d["respuestas_equipo"] for d in dias.values()),
+        "contactos_nuevos": contactos_nuevos,
+        # Antes de la primera derivacion registrada, las derivadas se estiman con el ultimo
+        # aviso de cada contacto: puede faltar quien se derivo mas de una vez despues.
+        "derivadas_aproximado": primera_derivacion is None
+        or desde_utc < (primera_derivacion if primera_derivacion.tzinfo else primera_derivacion.replace(tzinfo=timezone.utc)),
+        "por_dia": por_dia,
+    }
 
 
 # ── Modo borrador ──────────────────────────────────────────────────────────
