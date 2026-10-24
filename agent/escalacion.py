@@ -71,7 +71,13 @@ async def avisar_canal_interno(telefono: str, mensaje_cliente: str, motivo: str)
     interno; si no hay ninguno, solo lo deja en el log (igual que el kit nuevo: "aviso
     sin canal configurado").
     """
-    texto = f'Escalación ({motivo}) de {telefono}: "{mensaje_cliente}"'
+    # El nombre (si se conoce) se suma al numero: la plantilla de Meta tiene un campo fijo
+    # para el telefono y no se puede agregar uno nuevo sin volver a aprobarla.
+    from agent.memory import obtener_nombres
+
+    nombre = (await obtener_nombres([telefono])).get(telefono)
+    quien = f"{telefono} ({nombre})" if nombre else telefono
+    texto = f'Escalación ({motivo}) de {quien}: "{mensaje_cliente}"'
     webhook_slack = os.getenv("ESCALACION_SLACK_WEBHOOK", "")
     numero_interno = os.getenv("ESCALACION_WHATSAPP_NUMERO", "")
 
@@ -96,7 +102,7 @@ async def avisar_canal_interno(telefono: str, mensaje_cliente: str, motivo: str)
             # (200 OK) pero no lo entrega, en silencio. Confirmado a mano: probamos
             # mandar texto libre y no llego nada; con la plantilla "escalacion_aviso" si.
             enviado = await proveedor.enviar_plantilla(
-                numero_interno, "escalacion_aviso", "es_AR", [telefono, motivo, mensaje_cliente]
+                numero_interno, "escalacion_aviso", "es_AR", [quien, motivo, mensaje_cliente]
             )
             if not enviado:
                 logger.error("El proveedor no pudo mandar el aviso de escalacion al WhatsApp interno")

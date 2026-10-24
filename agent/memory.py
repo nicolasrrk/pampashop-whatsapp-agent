@@ -138,6 +138,12 @@ class Lead(Base):
     ultimo_aviso_escalado: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    # Nombre del perfil de WhatsApp: lo manda Meta con cada mensaje y lo eligio el propio
+    # cliente (puede ser un apodo, un emoji o venir vacio).
+    nombre_whatsapp: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
+    # Nombre puesto a mano desde el panel ("Adriana Mansilla", "Mayorista - Carlos").
+    # Tiene prioridad sobre el de WhatsApp: ver nombre_para_mostrar.
+    nombre_manual: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
@@ -232,6 +238,8 @@ _COLUMNAS_NUEVAS = [
     ("leads", "bot_activo", {"postgresql": "BOOLEAN", "*": "BOOLEAN"}, "DEFAULT TRUE"),
     ("mensajes", "remitente", {"postgresql": "VARCHAR(20)", "*": "VARCHAR(20)"}, ""),
     ("mensajes", "imagen_id", {"postgresql": "INTEGER", "*": "INTEGER"}, ""),
+    ("leads", "nombre_whatsapp", {"postgresql": "VARCHAR(120)", "*": "VARCHAR(120)"}, ""),
+    ("leads", "nombre_manual", {"postgresql": "VARCHAR(120)", "*": "VARCHAR(120)"}, ""),
 ]
 
 
@@ -402,7 +410,7 @@ async def obtener_imagen(imagen_id: int) -> tuple[str, bytes] | None:
 # ── CRM: leads ───────────────────────────────────────────────────────────────
 
 
-async def registrar_contacto(telefono: str, mensaje: str) -> Lead:
+async def registrar_contacto(telefono: str, mensaje: str, nombre_whatsapp: str | None = None) -> Lead:
     """
     Crea o actualiza el lead de ese telefono con su ultimo mensaje.
 
@@ -413,12 +421,17 @@ async def registrar_contacto(telefono: str, mensaje: str) -> Lead:
     async with async_session() as session:
         lead = await session.get(Lead, telefono)
         if lead is None:
-            lead = Lead(telefono=telefono, ultimo_mensaje=mensaje, veces_contactado=1)
+            lead = Lead(
+                telefono=telefono, ultimo_mensaje=mensaje, veces_contactado=1, nombre_whatsapp=nombre_whatsapp
+            )
             session.add(lead)
         else:
             lead.ultimo_mensaje = mensaje
             lead.veces_contactado += 1
             lead.actualizado_en = ahora()
+            # Se actualiza si cambio, pero un mensaje sin nombre no borra el que ya teniamos.
+            if nombre_whatsapp and nombre_whatsapp != lead.nombre_whatsapp:
+                lead.nombre_whatsapp = nombre_whatsapp
         await session.commit()
         await session.refresh(lead)
         return lead
@@ -507,6 +520,38 @@ async def resolver_escalado(telefono: str) -> bool:
         lead.escalado = False
         await session.commit()
         return True
+
+
+def nombre_para_mostrar(nombre_manual: str | None, nombre_whatsapp: str | None) -> str:
+    """El nombre a mostrar de un contacto: el puesto a mano, si no el de WhatsApp, si no vacio."""
+    return (nombre_manual or nombre_whatsapp or "").strip()
+
+
+async def guardar_nombre_manual(telefono: str, nombre: str) -> bool:
+    """
+    Pone (o, con un texto vacio, saca) el nombre a mano de un contacto. Devuelve False si
+    ese telefono no tiene conversacion registrada.
+
+    No toca actualizado_en: cambiar un nombre no es actividad del cliente, y esa fecha la
+    usan el orden de la lista y el filtro por fecha del panel.
+    """
+    async with async_session() as session:
+        lead = await session.get(Lead, telefono)
+        if lead is None:
+            return False
+        lead.nombre_manual = nombre.strip()[:120] or None
+        await session.commit()
+        return True
+
+
+async def obtener_nombres(telefonos: list[str]) -> dict[str, str]:
+    """Nombre para mostrar de cada telefono que tenga uno (los que no, no aparecen)."""
+    if not telefonos:
+        return {}
+    async with async_session() as session:
+        resultado = await session.execute(select(Lead).where(Lead.telefono.in_(telefonos)))
+        nombres = {l.telefono: nombre_para_mostrar(l.nombre_manual, l.nombre_whatsapp) for l in resultado.scalars()}
+    return {t: n for t, n in nombres.items() if n}
 
 
 async def alternar_bot(telefono: str, activo: bool) -> bool:

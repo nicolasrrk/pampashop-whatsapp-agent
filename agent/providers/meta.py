@@ -178,6 +178,13 @@ class ProveedorMeta(ProveedorWhatsApp):
         for entry in body.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value") or {}
+                # Meta manda el nombre del perfil de WhatsApp aparte, en "contacts", y no
+                # dentro de cada mensaje: se cruza por numero (wa_id == "from").
+                nombres = {
+                    c.get("wa_id"): ((c.get("profile") or {}).get("name") or "").strip()
+                    for c in value.get("contacts", [])
+                }
+                primero_de_este_lote = len(mensajes)
                 for msg in value.get("messages", []):
                     tipo = msg.get("type")
 
@@ -273,6 +280,11 @@ class ProveedorMeta(ProveedorWhatsApp):
                     # otros tipos (reacciones, contactos, interactivos, de sistema)
                     # se siguen ignorando: no son mensajes que un cliente espere
                     # que se le responda.
+
+                for nuevo in mensajes[primero_de_este_lote:]:
+                    nombre = nombres.get(nuevo.telefono)
+                    if nombre:
+                        nuevo.contexto["nombre_perfil"] = nombre
         return mensajes
 
     # ── Enviar ───────────────────────────────────────────────────────────

@@ -230,7 +230,9 @@ async def procesar_mensaje(msg: MensajeEntrante):
         try:
             # CRM: se registra CUALQUIER mensaje entrante, escale o no, para que
             # scripts/leads.py muestre quien escribio sin tener que abrir WhatsApp.
-            lead = await registrar_contacto(msg.telefono, msg.texto)
+            lead = await registrar_contacto(
+                msg.telefono, msg.texto, nombre_whatsapp=msg.contexto.get("nombre_perfil")
+            )
 
             # Si el cliente mando una foto, se guarda YA (antes de cualquier rama que pueda
             # cortar el flujo: bot pausado, escalacion, borrador): los links de descarga de

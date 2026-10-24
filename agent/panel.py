@@ -29,13 +29,16 @@ from agent.memory import (
     borrar_config,
     guardar_config,
     guardar_mensaje,
+    guardar_nombre_manual,
     listar_borradores_pendientes,
     listar_leads,
     marcar_borrador,
+    nombre_para_mostrar,
     obtener_config,
     obtener_conversacion_completa,
     obtener_imagen,
     obtener_metricas,
+    obtener_nombres,
     obtener_resumen_semanal,
     resolver_escalado,
     semanas_disponibles,
@@ -84,6 +87,8 @@ async def datos_leads(request: Request, limite: int = Query(50, ge=1, le=200)):
             "veces_contactado": lead.veces_contactado,
             "escalado": lead.escalado,
             "bot_activo": lead.bot_activo,
+            "nombre": nombre_para_mostrar(lead.nombre_manual, lead.nombre_whatsapp),
+            "nombre_manual": lead.nombre_manual or "",
             "actualizado_en": lead.actualizado_en.isoformat() if lead.actualizado_en else None,
         }
         for lead in leads
@@ -171,10 +176,12 @@ async def datos_borradores(request: Request):
     """Las respuestas redactadas que estan esperando aprobacion."""
     _verificar(request)
     borradores = await listar_borradores_pendientes()
+    nombres = await obtener_nombres([b.telefono for b in borradores])
     return [
         {
             "id": b.id,
             "telefono": b.telefono,
+            "nombre": nombres.get(b.telefono, ""),
             "mensaje_cliente": b.mensaje_cliente,
             "imagen_id": json.loads(b.contexto_json or "{}").get("imagen_id"),
             "respuesta": b.respuesta,
@@ -268,6 +275,68 @@ async def accion_bot(telefono: str, request: Request, cuerpo: dict = Body(defaul
 
     logger.info(f"{telefono}: bot {'activado' if activo else 'desactivado'} desde el panel")
     return {"ok": True, "bot_activo": activo}
+
+
+@router.post("/accion/nombre/{telefono}")
+async def accion_nombre(telefono: str, request: Request, cuerpo: dict = Body(default={})):
+    """
+    Pone el nombre a mano de un contacto (o lo borra, con un texto vacio). Tiene prioridad
+    sobre el nombre del perfil de WhatsApp, que lo eligio el propio cliente.
+    """
+    _verificar(request)
+    nombre = cuerpo.get("nombre")
+    if not isinstance(nombre, str):
+        raise HTTPException(status_code=400, detail="Falta 'nombre' (texto)")
+    if not await guardar_nombre_manual(telefono, nombre):
+        raise HTTPException(status_code=404, detail="Ese telefono no tiene conversacion registrada")
+    logger.info(f"{telefono}: nombre actualizado desde el panel")
+    return {"ok": True, "nombre": nombre.strip()[:120]}
+
+
+def _vcard_escapar(texto: str) -> str:
+    """Escapa lo que el formato vCard no admite crudo dentro de un valor."""
+    return (
+        texto.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+        .replace("\r", " ").replace("\n", " ")
+    )
+
+
+@router.get("/descargar/contactos.vcf")
+async def descargar_contactos(request: Request, todos: bool = Query(False)):
+    """
+    Los contactos como archivo .vcf (vCard), que se importa tal cual a Google Contacts o a
+    la agenda del celular. Por defecto solo los que tienen nombre (los que son un numero
+    pelado ensuciarian la agenda); con ?todos=true salen todos.
+    """
+    _verificar(request)
+    leads = await listar_leads(limite=100000)
+    tarjetas = []
+    for lead in leads:
+        nombre = nombre_para_mostrar(lead.nombre_manual, lead.nombre_whatsapp)
+        digitos = "".join(c for c in lead.telefono if c.isdigit())
+        if not digitos or lead.telefono != digitos:
+            continue  # identificadores que no son un numero de telefono (no se pueden agendar)
+        if not nombre and not todos:
+            continue
+        titulo = _vcard_escapar(nombre) if nombre else f"WhatsApp +{digitos}"
+        tarjetas.append(
+            "\r\n".join(
+                [
+                    "BEGIN:VCARD",
+                    "VERSION:3.0",
+                    f"FN:{titulo}",
+                    f"N:;{titulo};;;",
+                    f"TEL;TYPE=CELL:+{digitos}",
+                    "ORG:Cliente PAMPA SHOP",
+                    "END:VCARD",
+                ]
+            )
+        )
+    return Response(
+        content="\r\n".join(tarjetas) + ("\r\n" if tarjetas else ""),
+        media_type="text/vcard; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="contactos-pampa.vcf"'},
+    )
 
 
 @router.post("/accion/resolver/{telefono}")
@@ -487,6 +556,13 @@ PAGINA = """<!doctype html>
   }
   .btn-resolver:hover { background:var(--verde-bg); }
 
+  .tel .num-chico { display:block; font-weight:400; color:var(--tenue); font-size:11.5px; margin:0 0 1px; line-height:1.3; }
+  .btn-editar-nombre {
+    display:none; background:none; border:0; cursor:pointer; font-size:14px; line-height:1;
+    padding:4px 6px; border-radius:6px; color:var(--suave); flex-shrink:0;
+  }
+  .btn-editar-nombre:hover { background:var(--superficie); color:var(--texto); }
+
   .btn-resolver-header {
     display:none; align-items:center; gap:5px; border:1px solid var(--verde); background:var(--verde-bg);
     color:var(--verde); border-radius:8px; padding:6px 10px; font-size:12px; font-weight:600;
@@ -653,6 +729,7 @@ PAGINA = """<!doctype html>
       <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
       <button class="nav-btn" data-vista="prompt">⚙️ <span class="txt">Prompt</span></button>
       <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
+      <a class="nav-btn" id="linkContactos" href="/panel/descargar/contactos.vcf" title="Descarga los contactos con nombre para agendarlos en el celular o en Google Contactos">👤 <span class="txt">Exportar contactos</span></a>
     </nav>
     <div class="vivo-sidebar"><span class="punto" id="punto"></span><span id="contador"></span></div>
   </aside>
@@ -675,6 +752,7 @@ PAGINA = """<!doctype html>
       <div class="hilo-header">
         <button class="volver" id="volver" aria-label="Volver">&larr;</button>
         <h2 id="tituloConv">Elegí una conversación</h2>
+        <button type="button" class="btn-editar-nombre" id="btnNombre" title="Cambiar el nombre de este contacto" onclick="editarNombre()">&#9998;</button>
         <button type="button" class="btn-resolver-header" id="btnResolverHeader" onclick="resolverEscalado(telActual)">
           &#10003; Ya atendido
         </button>
@@ -741,7 +819,7 @@ const btnFiltroHoy = $("btnFiltroHoy"), btnFiltroAyer = $("btnFiltroAyer"), btnF
 const btnFiltroLimpiar = $("btnFiltroLimpiar");
 const hiloConversacion = $("hiloConversacion"), tituloConv = $("tituloConv"), volver = $("volver");
 const controlBot = $("controlBot"), switchBot = $("switchBot"), estadoBot = $("estadoBot"), avisoBot = $("avisoBot");
-const btnResolverHeader = $("btnResolverHeader");
+const btnResolverHeader = $("btnResolverHeader"), btnNombre = $("btnNombre");
 const hiloMensajes = $("hiloMensajes");
 const cajaResponder = $("cajaResponder"), textoResponder = $("textoResponder"), btnResponder = $("btnResponder");
 const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorradores"), contadorBorr = $("contadorBorr");
@@ -761,6 +839,14 @@ let promptCargado = false;  // para no pisar lo que esta tipeando con cada polli
 
 const escapar = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
 const iniciales = (tel) => String(tel).slice(-2);
+// Iniciales del nombre (hasta 2 letras); sin nombre, los ultimos 2 digitos del numero como siempre.
+const inicialesDe = (nombre, tel) => {
+  if (!nombre) return iniciales(tel);
+  const palabras = nombre.trim().split(" ").filter(Boolean);
+  // Se saltean las palabras que arrancan con un simbolo, como "(mayorista": "Roberto (mayorista)" -> "R".
+  const utiles = palabras.filter(p => !"([{<-_·|/&+.".includes(p[0]));
+  return (utiles.length ? utiles : palabras).slice(0, 2).map(p => Array.from(p)[0]).join("").toUpperCase();
+};
 const estaAbajo = (el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
 
 function fecha(iso) {
@@ -863,6 +949,7 @@ function pintarChats(leads) {
   if (telActual) {
     const abierto = leadsPorTelefono[telActual];
     btnResolverHeader.style.display = abierto && abierto.escalado ? "inline-flex" : "none";
+    actualizarTitulo();
   }
 
   const visibles = aplicarFiltroFecha(leads);
@@ -880,9 +967,9 @@ function pintarChats(leads) {
   chatsScroll.innerHTML = orden.map(l => `
     <div class="item-chat ${necesitaAtencion(l) ? "espera" : ""} ${l.telefono === telActual ? "seleccionado" : ""}"
          onclick="abrirChat('${escapar(l.telefono)}')">
-      <div class="avatar">${escapar(iniciales(l.telefono))}</div>
+      <div class="avatar">${escapar(inicialesDe(l.nombre, l.telefono))}</div>
       <div class="medio">
-        <div class="tel">${escapar(l.telefono)}
+        <div class="tel">${l.nombre ? escapar(l.nombre) + '<span class="num-chico">' + escapar(l.telefono) + "</span>" : escapar(l.telefono)}
           ${l.escalado ? `<span class="etiqueta">espera persona</span><button type="button" class="btn-resolver"
             title="Ya le contestamos: sacar el aviso" onclick="event.stopPropagation(); resolverEscalado('${escapar(l.telefono)}')">&#10003;</button>` : ""}
           ${!l.bot_activo ? '<span class="etiqueta manual">modo manual</span>' : ""}
@@ -942,7 +1029,7 @@ function pintarBorradores(bs) {
   }
   listaBorradores.innerHTML = bs.map(b => `
     <div class="tarjeta" id="b${b.id}">
-      <div class="de"><b>${escapar(b.telefono)}</b> &middot; ${fecha(b.creado_en)}</div>
+      <div class="de"><b>${escapar(b.nombre || b.telefono)}</b>${b.nombre ? " &middot; " + escapar(b.telefono) : ""} &middot; ${fecha(b.creado_en)}</div>
       <div class="dijo"><b>El cliente escribió</b>${b.imagen_id != null ? htmlImagen(b.imagen_id, "img-msj-borrador") : ""}${
         b.imagen_id != null && b.mensaje_cliente.trim() === TEXTO_FOTO ? "" : escapar(b.mensaje_cliente)}</div>
       <textarea class="txt-borrador" id="t${b.id}">${escapar(b.respuesta)}</textarea>
@@ -982,10 +1069,43 @@ function actualizarControlBot(activo) {
   avisoBot.style.display = activo ? "flex" : "none";
 }
 
+function actualizarTitulo() {
+  const lead = telActual && leadsPorTelefono[telActual];
+  tituloConv.textContent = lead && lead.nombre ? lead.nombre + " (" + telActual + ")" : (telActual || "");
+}
+
+async function editarNombre() {
+  const lead = leadsPorTelefono[telActual];
+  if (!lead) return;
+  // Se parte del nombre puesto a mano, no del de WhatsApp: asi se ve si hay uno propio que corregir.
+  const texto = prompt(
+    "Nombre para este contacto (vacío = volver al nombre de WhatsApp):",
+    lead.nombre_manual || lead.nombre || ""
+  );
+  if (texto === null) return;  // canceló
+  await guardarNombre(texto);
+}
+
+async function guardarNombre(nombre) {
+  try {
+    await pedir("/panel/accion/nombre/" + encodeURIComponent(telActual), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nombre }),
+    });
+    aviso("Nombre guardado");
+    ultimaFirmaLista = "";
+    await refrescar();
+  } catch (e) {
+    aviso(e.message, "error");
+  }
+}
+
 function abrirChat(telefono) {
   vista = "conversacion"; telActual = telefono; ultimaFirma = "";
   app.classList.add("chat-abierto");
-  tituloConv.textContent = telefono;
+  btnNombre.style.display = "inline-block";
+  actualizarTitulo();
   controlBot.style.display = "flex";
   cajaResponder.style.display = "flex";
   const lead = leadsPorTelefono[telefono];
@@ -998,6 +1118,7 @@ function cerrarChat() {
   telActual = null; ultimaFirma = "";
   app.classList.remove("chat-abierto");
   tituloConv.textContent = "Elegí una conversación";
+  btnNombre.style.display = "none";
   controlBot.style.display = "none";
   btnResolverHeader.style.display = "none";
   cajaResponder.style.display = "none";
@@ -1162,7 +1283,7 @@ async function refrescar(forzarAbajo) {
       pedir("/panel/datos/borradores").catch(() => []),
     ]);
     globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
-    const firmaLista = JSON.stringify(leads.map(l => l.telefono + l.actualizado_en + l.escalado + l.bot_activo));
+    const firmaLista = JSON.stringify(leads.map(l => l.telefono + l.actualizado_en + l.escalado + l.bot_activo + l.nombre));
     if (firmaLista !== ultimaFirmaLista) { pintarChats(leads); ultimaFirmaLista = firmaLista; }
 
     if (vista === "conversacion" && telActual) {
