@@ -1071,7 +1071,9 @@ function actualizarControlBot(activo) {
 
 function actualizarTitulo() {
   const lead = telActual && leadsPorTelefono[telActual];
-  tituloConv.textContent = lead && lead.nombre ? lead.nombre + " (" + telActual + ")" : (telActual || "");
+  tituloConv.textContent = lead && lead.nombre ? lead.nombre : (telActual || "");
+  // El numero no se muestra al lado del nombre, pero queda a mano al pasar el mouse.
+  tituloConv.title = telActual || "";
 }
 
 async function editarNombre() {
