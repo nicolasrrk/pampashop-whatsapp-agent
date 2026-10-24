@@ -440,6 +440,33 @@ PAGINA = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PAMPA</title>
+<script>
+(function () {
+  var oscuroDelSistema = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  function elegido() { try { return localStorage.getItem("panel_tema"); } catch (e) { return null; } }
+  function aplicar(oscuro) {
+    document.documentElement.setAttribute("data-theme", oscuro ? "dark" : "light");
+    var botones = document.querySelectorAll("[data-tema-btn]");
+    for (var i = 0; i < botones.length; i++) {
+      botones[i].innerHTML = (oscuro ? "&#9728;&#65039;" : "&#127769;") + ' <span class="txt">' + (oscuro ? "Modo claro" : "Modo oscuro") + "</span>";
+    }
+  }
+  var guardado = elegido();
+  aplicar(guardado ? guardado === "oscuro" : oscuroDelSistema);
+  document.addEventListener("DOMContentLoaded", function () { aplicar(document.documentElement.getAttribute("data-theme") === "dark"); });
+  window.alternarTema = function () {
+    var oscuro = document.documentElement.getAttribute("data-theme") !== "dark";
+    try { localStorage.setItem("panel_tema", oscuro ? "oscuro" : "claro"); } catch (e) {}
+    aplicar(oscuro);
+  };
+  // Si nunca eligio a mano, acompaña al sistema cuando este cambia.
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (e) {
+      if (!elegido()) aplicar(e.matches);
+    });
+  }
+})();
+</script>
 <style>
   :root {
     --app:#fff; --panel:#fff; --borde:#dfe1e8; --texto:#181a25; --suave:#8a8d99; --tenue:#b0b3bf;
@@ -450,18 +477,18 @@ PAGINA = """<!doctype html>
     --ambar:#b3760f; --ambar-bg:#fdf6ea;
     --sombra:0 1px 3px rgba(15,23,42,.07), 0 1px 1px rgba(15,23,42,.05);
     --superficie:#f4f5f9;
+    color-scheme:light;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --app:#0b0d14; --panel:#12141e; --borde:#22242f; --texto:#eceef3; --suave:#8b8e9c; --tenue:#565866;
-      --cliente:#191b26; --azul:#5b86ec; --azul-suave:#1a2236; --humano:#8a6bf5; --humano-suave:#211c33;
-      --acento:#5b86ec; --acento-suave:#1a2236;
-      --verde:#34d399; --verde-bg:#0f2b22;
-      --alerta:#e77b73; --alerta-bg:#2a1614;
-      --ambar:#e0b256; --ambar-bg:#241d0e;
-      --sombra:0 1px 3px rgba(0,0,0,.3);
-      --superficie:#171a26;
-    }
+  :root[data-theme="dark"] {
+    --app:#0b0d14; --panel:#12141e; --borde:#22242f; --texto:#eceef3; --suave:#8b8e9c; --tenue:#565866;
+    --cliente:#191b26; --azul:#5b86ec; --azul-suave:#1a2236; --humano:#8a6bf5; --humano-suave:#211c33;
+    --acento:#5b86ec; --acento-suave:#1a2236;
+    --verde:#34d399; --verde-bg:#0f2b22;
+    --alerta:#e77b73; --alerta-bg:#2a1614;
+    --ambar:#e0b256; --ambar-bg:#241d0e;
+    --sombra:0 1px 3px rgba(0,0,0,.3);
+    --superficie:#171a26;
+    color-scheme:dark;
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html, body { height:100%; }
@@ -513,10 +540,9 @@ PAGINA = """<!doctype html>
   }
   .filtro-fecha input[type="date"] {
     border:1px solid var(--borde); border-radius:8px; padding:5px 7px; font:inherit;
-    font-size:12px; background:var(--superficie); color:var(--texto); color-scheme:light;
+    font-size:12px; background:var(--superficie); color:var(--texto);
     min-width:0; flex:1;
   }
-  :root:not([data-theme="light"]) .filtro-fecha input[type="date"] { color-scheme:dark; }
   .filtro-fecha .sep { color:var(--tenue); font-size:11px; flex-shrink:0; }
   .filtro-fecha button {
     border:1px solid var(--borde); background:var(--panel); color:var(--suave);
@@ -729,6 +755,7 @@ PAGINA = """<!doctype html>
       <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
       <button class="nav-btn" data-vista="prompt">⚙️ <span class="txt">Prompt</span></button>
       <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
+      <button class="nav-btn" id="btnTema" type="button" data-tema-btn onclick="alternarTema()">&#127769; <span class="txt">Modo oscuro</span></button>
       <a class="nav-btn" id="linkContactos" href="/panel/descargar/contactos.vcf" title="Descarga los contactos con nombre para agendarlos en el celular o en Google Contactos">👤 <span class="txt">Exportar contactos</span></a>
     </nav>
     <div class="vivo-sidebar"><span class="punto" id="punto"></span><span id="contador"></span></div>
@@ -1329,6 +1356,33 @@ DASHBOARD_PAGINA = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PAMPA — Métricas</title>
+<script>
+(function () {
+  var oscuroDelSistema = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  function elegido() { try { return localStorage.getItem("panel_tema"); } catch (e) { return null; } }
+  function aplicar(oscuro) {
+    document.documentElement.setAttribute("data-theme", oscuro ? "dark" : "light");
+    var botones = document.querySelectorAll("[data-tema-btn]");
+    for (var i = 0; i < botones.length; i++) {
+      botones[i].innerHTML = (oscuro ? "&#9728;&#65039;" : "&#127769;") + ' <span class="txt">' + (oscuro ? "Modo claro" : "Modo oscuro") + "</span>";
+    }
+  }
+  var guardado = elegido();
+  aplicar(guardado ? guardado === "oscuro" : oscuroDelSistema);
+  document.addEventListener("DOMContentLoaded", function () { aplicar(document.documentElement.getAttribute("data-theme") === "dark"); });
+  window.alternarTema = function () {
+    var oscuro = document.documentElement.getAttribute("data-theme") !== "dark";
+    try { localStorage.setItem("panel_tema", oscuro ? "oscuro" : "claro"); } catch (e) {}
+    aplicar(oscuro);
+  };
+  // Si nunca eligio a mano, acompaña al sistema cuando este cambia.
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (e) {
+      if (!elegido()) aplicar(e.matches);
+    });
+  }
+})();
+</script>
 <style>
   :root {
     --fondo:#fff; --panel:#fff; --borde:#dfe1e8;
@@ -1336,6 +1390,19 @@ DASHBOARD_PAGINA = """<!doctype html>
     --acento:#3b6fe0; --acento-suave:#eef2ff;
     --verde:#16a34a;
     --sombra:0 1px 3px rgba(15,23,42,.07), 0 1px 1px rgba(15,23,42,.05);
+    --cabecera:rgba(255,255,255,.85); --borde-fuerte:#c7cbd6; --linea:#eef0f4;
+    --ambar:#b3760f; --ambar-bg:#fdf6ea; --alerta:#d0483f; --alerta-bg:#fdf2f1; --barra-fin:#a9c0f5;
+    color-scheme:light;
+  }
+  :root[data-theme="dark"] {
+    --fondo:#0b0d14; --panel:#12141e; --borde:#22242f;
+    --texto:#eceef3; --suave:#8b8e9c; --tenue:#565866;
+    --acento:#5b86ec; --acento-suave:#1a2236;
+    --verde:#34d399;
+    --sombra:0 1px 3px rgba(0,0,0,.3);
+    --cabecera:rgba(11,13,20,.85); --borde-fuerte:#3a3d4d; --linea:#1c1f2b;
+    --ambar:#e0b256; --ambar-bg:#241d0e; --alerta:#e77b73; --alerta-bg:#2a1614; --barra-fin:#2a3a63;
+    color-scheme:dark;
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body {
@@ -1345,7 +1412,7 @@ DASHBOARD_PAGINA = """<!doctype html>
     padding-bottom:48px;
   }
   header { position:sticky; top:0; z-index:10; backdrop-filter:blur(14px);
-    background:rgba(255,255,255,.85); border-bottom:1px solid var(--borde); }
+    background:var(--cabecera); border-bottom:1px solid var(--borde); }
   .barra { max-width:900px; margin:0 auto; display:flex; align-items:center; gap:14px; padding:20px 22px; }
   .volver { color:var(--suave); text-decoration:none; font-size:18px; line-height:1; flex-shrink:0;
     transition:color .15s; }
@@ -1369,7 +1436,7 @@ DASHBOARD_PAGINA = """<!doctype html>
     background:var(--panel); border:1px solid var(--borde); border-radius:16px;
     padding:20px 20px 18px; box-shadow:var(--sombra); transition:border-color .2s, transform .15s;
   }
-  .tarjeta:hover { border-color:#c7cbd6; transform:translateY(-1px); }
+  .tarjeta:hover { border-color:var(--borde-fuerte); transform:translateY(-1px); }
   .tarjeta .etiqueta { font-size:10.5px; color:var(--tenue); text-transform:uppercase;
     letter-spacing:1px; font-weight:600; margin-bottom:10px; }
   .tarjeta .valor { font-size:28px; font-weight:600; font-variant-numeric:tabular-nums;
@@ -1390,7 +1457,7 @@ DASHBOARD_PAGINA = """<!doctype html>
   .barra-dia { flex:1; display:flex; flex-direction:column; align-items:center; gap:9px; height:100%; justify-content:flex-end; }
   .barra-dia .cuerpo {
     width:100%; max-width:26px; border-radius:5px 5px 2px 2px; min-height:3px;
-    background:linear-gradient(180deg, var(--acento), #a9c0f5);
+    background:linear-gradient(180deg, var(--acento), var(--barra-fin));
     transition:height .5s ease;
   }
   .barra-dia .num { font-size:11px; color:var(--suave); font-weight:600; font-variant-numeric:tabular-nums; }
@@ -1408,23 +1475,29 @@ DASHBOARD_PAGINA = """<!doctype html>
     padding:8px 14px; font:inherit; font-size:13px; font-weight:600; cursor:pointer; text-decoration:none;
     box-shadow:var(--sombra); transition:border-color .15s;
   }
-  .btn-resumen:hover { border-color:#c7cbd6; }
+  .btn-resumen:hover { border-color:var(--borde-fuerte); }
   .btn-resumen.principal { background:var(--acento); border-color:var(--acento); color:#fff; }
   .tabla-dias { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--borde);
     border-radius:16px; overflow:hidden; box-shadow:var(--sombra); font-size:13px; }
   .tabla-dias th { text-align:right; font-size:10.5px; text-transform:uppercase; letter-spacing:.8px;
     color:var(--tenue); font-weight:600; padding:12px 14px; border-bottom:1px solid var(--borde); }
-  .tabla-dias td { text-align:right; padding:10px 14px; border-bottom:1px solid #eef0f4;
+  .tabla-dias td { text-align:right; padding:10px 14px; border-bottom:1px solid var(--linea);
     font-variant-numeric:tabular-nums; }
   .tabla-dias th:first-child, .tabla-dias td:first-child { text-align:left; }
   .tabla-dias tr:last-child td { border-bottom:0; }
-  .tabla-dias td.derivadas { color:#b3760f; font-weight:600; }
-  .nota-aprox { font-size:12px; color:#b3760f; background:#fdf6ea; border-radius:10px; padding:9px 12px; margin:0 0 14px; }
+  .tabla-dias td.derivadas { color:var(--ambar); font-weight:600; }
+  .nota-aprox { font-size:12px; color:var(--ambar); background:var(--ambar-bg); border-radius:10px; padding:9px 12px; margin:0 0 14px; }
   @media (max-width:560px) { .tabla-dias th, .tabla-dias td { padding:9px 8px; font-size:12px; } }
 
   .vacio { text-align:center; color:var(--tenue); padding:60px 16px; }
-  .error { background:#fdf2f1; color:#d0483f; padding:12px 14px; border-radius:12px;
-    border:1px solid rgba(208,72,63,.2); }
+  .error { background:var(--alerta-bg); color:var(--alerta); padding:12px 14px; border-radius:12px;
+    border:1px solid var(--borde); }
+  .btn-tema {
+    border:1px solid var(--borde); background:var(--panel); color:var(--suave); border-radius:10px;
+    padding:6px 11px; font:inherit; font-size:12px; font-weight:600; cursor:pointer; flex-shrink:0;
+    box-shadow:var(--sombra);
+  }
+  .btn-tema:hover { border-color:var(--borde-fuerte); color:var(--texto); }
 </style>
 </head>
 <body>
@@ -1435,6 +1508,7 @@ DASHBOARD_PAGINA = """<!doctype html>
       <h1><b>PAMPA</b> — Panel de control</h1>
       <p>Pampa Shop · métricas en vivo</p>
     </div>
+    <button class="btn-tema" id="btnTema" type="button" data-tema-btn onclick="alternarTema()">&#127769; <span class="txt">Modo oscuro</span></button>
     <span class="vivo"><span class="punto"></span>vivo</span>
   </div>
 </header>
