@@ -148,6 +148,25 @@ class Lead(Base):
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
+class Ejemplo(Base):
+    """
+    Una respuesta real del equipo, elegida a mano como modelo de tono y de forma de decir
+    las cosas. Se agregan al prompt del bot (ver brain._bloque_ejemplos).
+
+    Se guardan como TEXTO propio, no como referencia al mensaje: la persona que los elige
+    los puede editar antes de guardar (para sacar nombres u otros datos personales), y el
+    ejemplo tiene que seguir igual aunque el chat original se borre.
+    """
+
+    __tablename__ = "ejemplos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mensaje_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # Mensaje de origen
+    pregunta: Mapped[str] = mapped_column(Text, default="")  # lo que habia escrito el cliente
+    respuesta: Mapped[str] = mapped_column(Text)  # lo que contesto el equipo
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
 class Escalacion(Base):
     """
     Una derivacion a una persona del equipo: una fila por cada aviso interno que se mando.
@@ -610,6 +629,7 @@ async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> lis
             # infiere lo mismo que hacia el panel antes (por "role"), asi que ese chat
             # viejo sigue viendose exactamente igual que siempre.
             "remitente": m.remitente or ("cliente" if m.role == "user" else "bot"),
+            "id": m.id,
             "imagen_id": m.imagen_id,
         }
         for m in mensajes
@@ -892,6 +912,63 @@ async def obtener_resumen_semanal(lunes: date) -> dict:
         or desde_utc < (primera_derivacion if primera_derivacion.tzinfo else primera_derivacion.replace(tzinfo=timezone.utc)),
         "por_dia": por_dia,
     }
+
+
+# ── Ejemplos de como responde el equipo ─────────────────────────────────────
+
+# Tope de ejemplos guardados. Cada uno se suma al prompt de CADA conversacion: pocos y bien
+# elegidos rinden mas que muchos, y asi el costo y el tamaño del prompt no se disparan.
+MAX_EJEMPLOS = 10
+
+
+async def obtener_mensaje(mensaje_id: int) -> "Mensaje | None":
+    async with async_session() as session:
+        return await session.get(Mensaje, mensaje_id)
+
+
+async def mensaje_cliente_previo(telefono: str, antes_de_id: int) -> str:
+    """Lo ultimo que escribio el cliente antes de ese mensaje: es a lo que respondio el equipo."""
+    async with async_session() as session:
+        previo = await session.scalar(
+            select(Mensaje.content)
+            .where(Mensaje.telefono == telefono, Mensaje.role == "user", Mensaje.id < antes_de_id)
+            .order_by(Mensaje.id.desc())
+            .limit(1)
+        )
+    return previo or ""
+
+
+async def guardar_ejemplo(mensaje_id: int | None, pregunta: str, respuesta: str) -> int:
+    """Guarda un ejemplo. ValueError con un texto para mostrar si no se puede."""
+    async with async_session() as session:
+        cantidad = await session.scalar(select(func.count()).select_from(Ejemplo)) or 0
+        if cantidad >= MAX_EJEMPLOS:
+            raise ValueError(f"Ya hay {MAX_EJEMPLOS} ejemplos guardados. Borrá alguno para sumar otro.")
+        if mensaje_id is not None:
+            ya = await session.scalar(select(Ejemplo.id).where(Ejemplo.mensaje_id == mensaje_id))
+            if ya is not None:
+                raise ValueError("Ese mensaje ya está guardado como ejemplo.")
+        ejemplo = Ejemplo(mensaje_id=mensaje_id, pregunta=pregunta, respuesta=respuesta, creado_en=ahora())
+        session.add(ejemplo)
+        await session.commit()
+        await session.refresh(ejemplo)
+        return ejemplo.id
+
+
+async def listar_ejemplos(limite: int = MAX_EJEMPLOS) -> list[Ejemplo]:
+    async with async_session() as session:
+        resultado = await session.execute(select(Ejemplo).order_by(Ejemplo.id.asc()).limit(limite))
+        return list(resultado.scalars().all())
+
+
+async def borrar_ejemplo(ejemplo_id: int) -> bool:
+    async with async_session() as session:
+        ejemplo = await session.get(Ejemplo, ejemplo_id)
+        if ejemplo is None:
+            return False
+        await session.delete(ejemplo)
+        await session.commit()
+        return True
 
 
 # ── Modo borrador ──────────────────────────────────────────────────────────

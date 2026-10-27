@@ -28,15 +28,21 @@ from agent.memory import (
     alternar_bot,
     borrar_config,
     guardar_config,
+    borrar_ejemplo,
+    guardar_ejemplo,
     guardar_mensaje,
     guardar_nombre_manual,
     listar_borradores_pendientes,
+    listar_ejemplos,
     listar_leads,
     marcar_borrador,
+    mensaje_cliente_previo,
+    MAX_EJEMPLOS,
     nombre_para_mostrar,
     obtener_config,
     obtener_conversacion_completa,
     obtener_imagen,
+    obtener_mensaje,
     obtener_metricas,
     obtener_nombres,
     obtener_resumen_semanal,
@@ -337,6 +343,67 @@ async def descargar_contactos(request: Request, todos: bool = Query(False)):
         media_type="text/vcard; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="contactos-pampa.vcf"'},
     )
+
+
+@router.get("/datos/ejemplos")
+async def datos_ejemplos(request: Request):
+    """Las respuestas del equipo guardadas como modelo de tono para el bot."""
+    _verificar(request)
+    ejemplos = await listar_ejemplos()
+    return {
+        "maximo": MAX_EJEMPLOS,
+        "ejemplos": [
+            {
+                "id": e.id,
+                "pregunta": e.pregunta,
+                "respuesta": e.respuesta,
+                "creado_en": e.creado_en.isoformat() if e.creado_en else None,
+            }
+            for e in ejemplos
+        ],
+    }
+
+
+@router.post("/accion/ejemplo")
+async def accion_ejemplo(request: Request, cuerpo: dict = Body(default={})):
+    """
+    Guarda una respuesta del equipo como ejemplo para el bot. El texto viene del panel (la
+    persona lo puede haber editado para sacarle nombres u otros datos personales); lo que
+    se verifica aca es que el mensaje exista y sea de verdad una respuesta de una persona.
+    """
+    _verificar(request)
+    mensaje_id = cuerpo.get("mensaje_id")
+    respuesta = (cuerpo.get("respuesta") or "").strip() if isinstance(cuerpo.get("respuesta"), str) else ""
+    if not isinstance(mensaje_id, int) or not respuesta:
+        raise HTTPException(status_code=400, detail="Falta el mensaje o el texto del ejemplo")
+
+    mensaje = await obtener_mensaje(mensaje_id)
+    if mensaje is None:
+        raise HTTPException(status_code=404, detail="Ese mensaje no existe")
+    if mensaje.role != "assistant" or mensaje.remitente != "humano":
+        raise HTTPException(status_code=400, detail="Solo se pueden guardar como ejemplo respuestas escritas por el equipo")
+
+    if isinstance(cuerpo.get("pregunta"), str):
+        # Viene del panel, donde la persona la pudo limpiar de nombres y datos personales
+        # (o dejar vacia para no incluirla). Es lo que se le muestra al bot en TODAS las charlas.
+        pregunta = cuerpo["pregunta"].strip()[:400]
+    else:
+        pregunta = (await mensaje_cliente_previo(mensaje.telefono, mensaje.id))[:400]
+    try:
+        ejemplo_id = await guardar_ejemplo(mensaje_id, pregunta, respuesta[:800])
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    logger.info(f"Ejemplo {ejemplo_id} guardado desde el panel")
+    return {"ok": True, "id": ejemplo_id}
+
+
+@router.post("/accion/ejemplo/{ejemplo_id}/borrar")
+async def accion_ejemplo_borrar(ejemplo_id: int, request: Request):
+    _verificar(request)
+    if not await borrar_ejemplo(ejemplo_id):
+        raise HTTPException(status_code=404, detail="Ese ejemplo no existe")
+    logger.info(f"Ejemplo {ejemplo_id} borrado desde el panel")
+    return {"ok": True}
 
 
 @router.post("/accion/resolver/{telefono}")
@@ -710,6 +777,21 @@ PAGINA = """<!doctype html>
     font-weight:600; cursor:pointer; font-family:inherit; }
   .prompt-acciones button:disabled { opacity:.5; cursor:default; }
   .guardar-prompt { background:var(--azul); color:#fff; }
+
+  /* ── Ejemplos del equipo ── */
+  .btn-ejemplo { background:none; border:0; cursor:pointer; font-size:12px; line-height:1;
+    opacity:.5; padding:0 3px; vertical-align:baseline; }
+  .btn-ejemplo:hover { opacity:1; }
+  .vista-ejemplos { display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto;
+    padding:18px 16px; background:var(--app); }
+  .ejemplo-card { background:var(--panel); border:1px solid var(--borde); border-radius:14px;
+    padding:14px 16px; margin-bottom:12px; box-shadow:var(--sombra); }
+  .ejemplo-card .pregunta { font-size:12.5px; color:var(--suave); margin-bottom:7px; }
+  .ejemplo-card .pregunta b, .ejemplo-card .respuesta b { font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--tenue); display:block; margin-bottom:2px; }
+  .ejemplo-card .respuesta { white-space:pre-wrap; word-wrap:break-word; }
+  .ejemplo-card .borrar { margin-top:10px; background:none; border:1px solid var(--borde); color:var(--alerta);
+    border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; }
   .restaurar-prompt { background:var(--app); color:var(--suave); border:1px solid var(--borde) !important; }
 
   .aviso { position:fixed; top:16px; right:16px; padding:10px 16px; border-radius:12px;
@@ -754,6 +836,7 @@ PAGINA = """<!doctype html>
       <button class="nav-btn activa" data-vista="chats">💬 <span class="txt">Conversaciones</span></button>
       <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
       <button class="nav-btn" data-vista="prompt">⚙️ <span class="txt">Prompt</span></button>
+      <button class="nav-btn" data-vista="ejemplos">⭐ <span class="txt">Ejemplos</span></button>
       <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
       <button class="nav-btn" id="btnTema" type="button" data-tema-btn onclick="alternarTema()">&#127769; <span class="txt">Modo oscuro</span></button>
       <a class="nav-btn" id="linkContactos" href="/panel/descargar/contactos.vcf" title="Descarga los contactos con nombre para agendarlos en el celular o en Google Contactos">👤 <span class="txt">Exportar contactos</span></a>
@@ -812,6 +895,19 @@ PAGINA = """<!doctype html>
     <div id="listaBorradores"><p class="vacio">Cargando…</p></div>
   </div>
 
+  <div class="vista-ejemplos" id="vistaEjemplos">
+    <div class="prompt-header">
+      <h2>Ejemplos del equipo</h2>
+      <span class="prompt-pill mostrar" id="contadorEjemplos"></span>
+    </div>
+    <p class="prompt-ayuda">
+      Son respuestas del equipo que elegiste como modelo. El bot las usa para imitar el tono y la forma de
+      decir las cosas, no para copiar datos. Para sumar uno, abrí una conversación y tocá la estrella
+      &#11088; que aparece en los mensajes del equipo.
+    </p>
+    <div id="listaEjemplos"><p class="vacio">Cargando…</p></div>
+  </div>
+
   <div class="vista-prompt" id="vistaPrompt">
     <div class="prompt-header">
       <h2>Comportamiento del agente</h2>
@@ -852,6 +948,7 @@ const cajaResponder = $("cajaResponder"), textoResponder = $("textoResponder"), 
 const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorradores"), contadorBorr = $("contadorBorr");
 const vistaPrompt = $("vistaPrompt"), textoPrompt = $("textoPrompt"), pillPersonalizado = $("pillPersonalizado");
 const btnGuardarPrompt = $("btnGuardarPrompt"), btnRestaurarPrompt = $("btnRestaurarPrompt");
+const vistaEjemplos = $("vistaEjemplos"), listaEjemplos = $("listaEjemplos"), contadorEjemplos = $("contadorEjemplos");
 
 let vista = "chats";        // chats | borradores | prompt | conversacion
 let telActual = null;
@@ -1029,7 +1126,35 @@ function abrirVisor(src) { $("visorImg").src = src; $("visor").classList.add("ab
 function cerrarVisor() { $("visor").classList.remove("abierto"); $("visorImg").removeAttribute("src"); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") cerrarVisor(); });
 
+// Mensajes de la conversacion abierta por id, para que la estrella lea el texto sin ponerlo en el HTML.
+let mensajesActuales = {};
+
+async function guardarEjemplo(mensajeId) {
+  const m = mensajesActuales[mensajeId];
+  if (!m) return;
+  // Se muestra el texto para poder editarlo antes: hay que sacar nombres u otros datos personales.
+  const texto = prompt("Así va a quedar el ejemplo para el bot. Sacá nombres y otros datos personales antes de guardar:", m.content);
+  if (texto === null || !texto.trim()) return;
+  // Lo que habia escrito el cliente: tambien se le muestra al bot, asi que tambien se limpia.
+  const previos = Object.values(mensajesActuales).filter(x => x.role === "user" && x.id < mensajeId);
+  const previo = previos.length ? previos[previos.length - 1].content : "";
+  const pregunta = prompt("Lo que había escrito el cliente (opcional). Sacá nombres y datos personales, o dejalo vacío para no incluirlo:", previo);
+  if (pregunta === null) return;
+  try {
+    await pedir("/panel/accion/ejemplo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mensaje_id: mensajeId, respuesta: texto, pregunta }),
+    });
+    aviso("Guardado como ejemplo para el bot");
+  } catch (e) {
+    aviso(e.message, "error");
+  }
+}
+
 function pintarConversacion(msgs, alFinal) {
+  mensajesActuales = {};
+  msgs.forEach(m => { mensajesActuales[m.id] = m; });
   hiloMensajes.innerHTML = msgs.length
     ? msgs.map((m, i) => {
         const tipo = m.remitente === "humano" ? "humano" : (m.role === "user" ? "cliente" : "bot");
@@ -1041,11 +1166,39 @@ function pintarConversacion(msgs, alFinal) {
           cuerpo = htmlImagen(m.imagen_id) + (texto ? `<span class="txt-img">${escapar(texto)}</span>` : "");
         }
         return `<div class="fila-msj ${tipo} ${esNuevo ? "nuevo" : ""}">
-          <span class="etiqueta-msj">${etiqueta} · ${fecha(m.timestamp)}</span>
+          <span class="etiqueta-msj">${etiqueta} · ${fecha(m.timestamp)}${tipo === "humano" ? ' <button type="button" class="btn-ejemplo" title="Guardar como ejemplo para el bot" onclick="guardarEjemplo(' + Number(m.id) + ')">&#11088;</button>' : ""}</span>
           <div class="cuerpo-msj">${cuerpo}</div>
         </div>`;
       }).join("")
     : '<p class="vacio"><span class="icono">&#128172;</span>Sin mensajes guardados.</p>';
+}
+
+async function cargarEjemplos() {
+  try {
+    const d = await pedir("/panel/datos/ejemplos");
+    contadorEjemplos.textContent = d.ejemplos.length + " de " + d.maximo;
+    listaEjemplos.innerHTML = d.ejemplos.length
+      ? d.ejemplos.map(e => `
+        <div class="ejemplo-card">
+          ${e.pregunta ? '<div class="pregunta"><b>El cliente escribió</b>' + escapar(e.pregunta) + "</div>" : ""}
+          <div class="respuesta"><b>El equipo contestó</b>${escapar(e.respuesta)}</div>
+          <button type="button" class="borrar" onclick="borrarEjemplo(${Number(e.id)})">Borrar</button>
+        </div>`).join("")
+      : '<p class="vacio"><span class="icono">&#11088;</span>Todavía no hay ejemplos guardados.</p>';
+  } catch (e) {
+    listaEjemplos.innerHTML = '<p class="vacio">' + escapar(e.message) + "</p>";
+  }
+}
+
+async function borrarEjemplo(id) {
+  if (!confirm("¿Borrar este ejemplo? El bot deja de usarlo.")) return;
+  try {
+    await pedir("/panel/accion/ejemplo/" + id + "/borrar", { method: "POST" });
+    aviso("Ejemplo borrado");
+    cargarEjemplos();
+  } catch (e) {
+    aviso(e.message, "error");
+  }
 }
 
 function pintarBorradores(bs) {
@@ -1266,9 +1419,10 @@ navLateral.addEventListener("click", (e) => {
   navLateral.querySelectorAll(".nav-btn[data-vista]").forEach(b => b.classList.remove("activa"));
   boton.classList.add("activa");
   vista = boton.dataset.vista;
-  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt");
+  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt" || vista === "ejemplos");
   if (vista !== "conversacion") cerrarChat();
   if (vista === "prompt" && !promptCargado) cargarPrompt().catch(e => aviso(e.message, "error"));
+  if (vista === "ejemplos") cargarEjemplos();
   refrescar();
 });
 
@@ -1285,6 +1439,7 @@ async function refrescar(forzarAbajo) {
       panelPrincipal.style.display = "none";
       vistaBorradores.style.display = "flex";
       vistaPrompt.style.display = "none";
+      vistaEjemplos.style.display = "none";
       const bs = await pedir("/panel/datos/borradores");
       globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
       const firma = JSON.stringify(bs.map(b => b.id));
@@ -1297,13 +1452,24 @@ async function refrescar(forzarAbajo) {
       // Se carga una sola vez al entrar (ver el click handler de navLateral).
       panelPrincipal.style.display = "none";
       vistaBorradores.style.display = "none";
+      vistaEjemplos.style.display = "none";
       vistaPrompt.style.display = "flex";
+      return;
+    }
+
+    if (vista === "ejemplos") {
+      // Como el prompt: se carga al entrar y despues de cada cambio, no cada 4 segundos.
+      panelPrincipal.style.display = "none";
+      vistaBorradores.style.display = "none";
+      vistaPrompt.style.display = "none";
+      vistaEjemplos.style.display = "flex";
       return;
     }
 
     panelPrincipal.style.display = "flex";
     vistaBorradores.style.display = "none";
     vistaPrompt.style.display = "none";
+    vistaEjemplos.style.display = "none";
 
     // La lista de chats se mantiene al dia siempre: en desktop queda visible al
     // lado del hilo, y en mobile es la pantalla de cuando no hay chat abierto.

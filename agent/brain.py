@@ -26,7 +26,7 @@ import yaml
 from dotenv import load_dotenv
 
 from agent.escalacion import escalar_desde_agente
-from agent.memory import obtener_config
+from agent.memory import listar_ejemplos, obtener_config
 from agent.tools import (
     buscar_productos_tienda_nube,
     comparar_con_fotos_del_catalogo,
@@ -320,6 +320,32 @@ def cargar_system_prompt() -> str:
     )
 
 
+async def _bloque_ejemplos() -> str:
+    """
+    Las respuestas del equipo que se eligieron como modelo, formateadas para sumarlas al
+    system prompt. Vacio si no hay ninguna. Un fallo al leerlas nunca debe tumbar la
+    respuesta: sin ejemplos el bot contesta igual, solo que sin ese estilo extra.
+    """
+    try:
+        ejemplos = await listar_ejemplos()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"No se pudieron leer los ejemplos del equipo: {e}")
+        return ""
+    if not ejemplos:
+        return ""
+
+    partes = [
+        "\n\n## Ejemplos de cómo responde el equipo de PAMPA SHOP\n"
+        "Son respuestas reales de personas del equipo, elegidas como modelo de tono y de forma "
+        "de decir las cosas. Tomá el estilo: cómo saludan, qué tan cortas son, cómo cierran. "
+        "NO copies datos puntuales (nombres, precios, stock, plazos, links): esos los consultás "
+        "siempre con las herramientas, y tus reglas de arriba mandan por encima de estos ejemplos."
+    ]
+    for i, e in enumerate(ejemplos, start=1):
+        partes.append(f"\nEjemplo {i}\n" + (f"Cliente: {e.pregunta}\n" if e.pregunta else "") + f"Equipo: {e.respuesta}")
+    return "\n".join(partes)
+
+
 async def obtener_system_prompt_activo() -> str:
     """
     El system prompt que se usa de verdad: el override guardado desde el panel si
@@ -553,7 +579,7 @@ async def generar_respuesta(
     if not imagen and (not mensaje or len(mensaje.strip()) < 2):
         return obtener_mensaje_fallback(), False, None, []
 
-    system_prompt = await obtener_system_prompt_activo()
+    system_prompt = await obtener_system_prompt_activo() + await _bloque_ejemplos()
     mensajes: list[dict] = [{"role": m["role"], "content": m["content"]} for m in historial]
 
     contenido_usuario: list[dict] = []
