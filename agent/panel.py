@@ -251,11 +251,13 @@ async def accion_borrador(
         borrador.telefono, "user", borrador.mensaje_cliente, imagen_id=contexto.get("imagen_id")
     )
     # Si el bot habia decidido mandar fotos de producto, salen ahora, despues del texto.
-    nota_fotos = nota_de_fotos(
-        await enviar_fotos(proveedor, borrador.telefono, contexto.get("fotos") or [], contexto)
-    )
+    fotos_enviadas = await enviar_fotos(proveedor, borrador.telefono, contexto.get("fotos") or [], contexto)
+    nota_fotos = nota_de_fotos(fotos_enviadas)
     await guardar_mensaje(
-        borrador.telefono, "assistant", f"{texto}\n{nota_fotos}" if nota_fotos else texto
+        borrador.telefono,
+        "assistant",
+        f"{texto}\n{nota_fotos}" if nota_fotos else texto,
+        fotos=[f["url"] for f in fotos_enviadas],
     )
     logger.info(f"Borrador {borrador_id} aprobado y enviado desde el panel")
     return {"ok": True, "estado": "enviado"}
@@ -703,6 +705,8 @@ PAGINA = """<!doctype html>
     border-radius:10px; cursor:zoom-in; background:var(--superficie); }
   .cuerpo-msj .img-msj + .txt-img { margin-top:8px; display:block; }
   .img-msj-borrador { max-width:180px; max-height:180px; margin:0 0 8px; }
+  .fotos-enviadas { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .fotos-enviadas .img-msj { width:110px; height:110px; max-width:none; background:#fff; }
   .visor {
     position:fixed; inset:0; z-index:80; background:rgba(8,10,16,.88); display:none;
     align-items:center; justify-content:center; padding:20px; cursor:zoom-out;
@@ -1117,6 +1121,15 @@ const TEXTO_FOTO = "[el cliente envio una foto]";
 let pegarAbajo = true;
 function fotoCargada() { if (pegarAbajo) hiloMensajes.scrollTop = hiloMensajes.scrollHeight; }
 
+// Fotos de producto que el bot le mando al cliente. Solo links https (vienen de Tienda Nube).
+function htmlFotosEnviadas(fotos) {
+  const validas = (fotos || []).filter(u => typeof u === "string" && u.startsWith("https://"));
+  if (!validas.length) return "";
+  return '<div class="fotos-enviadas">' + validas.map(u =>
+    `<img class="img-msj" src="${escapar(u).replace(/"/g, "&quot;")}" alt="Foto enviada al cliente" loading="lazy"
+      onload="fotoCargada()" onclick="event.stopPropagation(); abrirVisor(this.src)">`).join("") + "</div>";
+}
+
 function htmlImagen(id, extraClase) {
   return `<img class="img-msj ${extraClase || ""}" src="/panel/imagen/${Number(id)}" alt="Foto del cliente"
     onload="fotoCargada()" onclick="event.stopPropagation(); abrirVisor(this.src)">`;
@@ -1165,6 +1178,7 @@ function pintarConversacion(msgs, alFinal) {
           const texto = m.content.trim() === TEXTO_FOTO ? "" : m.content;
           cuerpo = htmlImagen(m.imagen_id) + (texto ? `<span class="txt-img">${escapar(texto)}</span>` : "");
         }
+        cuerpo += htmlFotosEnviadas(m.fotos);
         return `<div class="fila-msj ${tipo} ${esNuevo ? "nuevo" : ""}">
           <span class="etiqueta-msj">${etiqueta} · ${fecha(m.timestamp)}${tipo === "humano" ? ' <button type="button" class="btn-ejemplo" title="Guardar como ejemplo para el bot" onclick="guardarEjemplo(' + Number(m.id) + ')">&#11088;</button>' : ""}</span>
           <div class="cuerpo-msj">${cuerpo}</div>

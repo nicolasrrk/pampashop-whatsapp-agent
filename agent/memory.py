@@ -9,6 +9,7 @@ SQLite en local, PostgreSQL en produccion.
 """
 
 import base64
+import json
 import logging
 import os
 from datetime import date, datetime, time as hora_del_dia, timedelta, timezone
@@ -73,6 +74,9 @@ class Mensaje(Base):
     # Foto que mando el cliente en ESTE mensaje (ver clase Imagen). Nullable: casi todos
     # los mensajes son solo texto, y los viejos (anteriores a este campo) tampoco la tienen.
     imagen_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Links (JSON) de las fotos de producto que el bot le mando al cliente con este mensaje,
+    # para mostrarlas en el panel. Las fotos estan en Tienda Nube: aca solo va el link.
+    fotos_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
 
 class Imagen(Base):
@@ -257,6 +261,7 @@ _COLUMNAS_NUEVAS = [
     ("leads", "bot_activo", {"postgresql": "BOOLEAN", "*": "BOOLEAN"}, "DEFAULT TRUE"),
     ("mensajes", "remitente", {"postgresql": "VARCHAR(20)", "*": "VARCHAR(20)"}, ""),
     ("mensajes", "imagen_id", {"postgresql": "INTEGER", "*": "INTEGER"}, ""),
+    ("mensajes", "fotos_json", {"postgresql": "TEXT", "*": "TEXT"}, ""),
     ("leads", "nombre_whatsapp", {"postgresql": "VARCHAR(120)", "*": "VARCHAR(120)"}, ""),
     ("leads", "nombre_manual", {"postgresql": "VARCHAR(120)", "*": "VARCHAR(120)"}, ""),
 ]
@@ -346,6 +351,7 @@ async def guardar_mensaje(
     content: str,
     remitente: str | None = None,
     imagen_id: int | None = None,
+    fotos: list[str] | None = None,
 ):
     """
     Guarda un mensaje en el historial de esa conversacion.
@@ -365,6 +371,7 @@ async def guardar_mensaje(
                 content=content,
                 remitente=remitente,
                 imagen_id=imagen_id,
+                fotos_json=json.dumps(fotos) if fotos else None,
                 timestamp=ahora(),
             )
         )
@@ -601,6 +608,17 @@ async def listar_leads(limite: int = 50) -> list[Lead]:
         return list(resultado.scalars().all())
 
 
+def _fotos_de(fotos_json: str | None) -> list[str]:
+    """Los links de fotos guardados en un mensaje. Uno roto o vacio no debe romper el panel."""
+    if not fotos_json:
+        return []
+    try:
+        fotos = json.loads(fotos_json)
+    except ValueError:
+        return []
+    return [f for f in fotos if isinstance(f, str)] if isinstance(fotos, list) else []
+
+
 async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> list[dict]:
     """
     La conversacion entera para mostrarla en el panel, con fecha y hora.
@@ -631,6 +649,7 @@ async def obtener_conversacion_completa(telefono: str, limite: int = 200) -> lis
             "remitente": m.remitente or ("cliente" if m.role == "user" else "bot"),
             "id": m.id,
             "imagen_id": m.imagen_id,
+            "fotos": _fotos_de(m.fotos_json),
         }
         for m in mensajes
     ]

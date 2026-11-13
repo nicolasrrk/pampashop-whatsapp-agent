@@ -318,8 +318,10 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
             # Las fotos de producto van DESPUES del texto, para que lleguen en orden.
             nota_fotos = ""
+            fotos_enviadas: list[dict] = []
             if fotos:
-                nota_fotos = nota_de_fotos(await enviar_fotos(proveedor, msg.telefono, fotos, msg.contexto))
+                fotos_enviadas = await enviar_fotos(proveedor, msg.telefono, fotos, msg.contexto)
+                nota_fotos = nota_de_fotos(fotos_enviadas)
 
             # Solo se guarda en el historial lo que de verdad es conversacion. Los avisos
             # tecnicos ("estoy teniendo problemas") no son un turno del agente: guardarlos
@@ -329,7 +331,10 @@ async def procesar_mensaje(msg: MensajeEntrante):
                 # La nota de las fotos queda en el mensaje guardado: asi el modelo sabe en
                 # el turno siguiente que ya se las mando, y el panel lo muestra en el chat.
                 await guardar_mensaje(
-                    msg.telefono, "assistant", f"{respuesta}\n{nota_fotos}" if nota_fotos else respuesta
+                    msg.telefono,
+                    "assistant",
+                    f"{respuesta}\n{nota_fotos}" if nota_fotos else respuesta,
+                    fotos=[f["url"] for f in fotos_enviadas],
                 )
                 # "uso" es None para los avisos de tipo no soportado (no hubo llamada a
                 # Claude) y para cualquier caso que ya se filtro arriba: solo se guarda
