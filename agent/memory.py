@@ -171,6 +171,25 @@ class Ejemplo(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
+class Seguimiento(Base):
+    """
+    Cada vez que el bot evaluo escribirle a un cliente que consulto y no compro (ver
+    agent/seguimiento.py), quede o no en un mensaje. Sirve para no evaluar dos veces el
+    mismo tramo de charla, para no escribirle mas de una vez por semana a nadie, y para
+    mostrar en el panel que se mando y por que se descarto lo demas.
+    """
+
+    __tablename__ = "seguimientos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    mensaje_cliente_id: Mapped[int] = mapped_column(Integer, index=True)  # ultimo mensaje del cliente evaluado
+    estado: Mapped[str] = mapped_column(String(20))  # enviado | borrador | descartado | error
+    motivo: Mapped[str] = mapped_column(Text, default="")
+    mensaje: Mapped[str] = mapped_column(Text, default="")
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora, index=True)
+
+
 class Escalacion(Base):
     """
     Una derivacion a una persona del equipo: una fila por cada aviso interno que se mando.

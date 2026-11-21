@@ -247,9 +247,11 @@ async def accion_borrador(
         raise HTTPException(status_code=502, detail="No se pudo enviar. Queda pendiente.")
 
     await marcar_borrador(borrador_id, "aprobado")
-    await guardar_mensaje(
-        borrador.telefono, "user", borrador.mensaje_cliente, imagen_id=contexto.get("imagen_id")
-    )
+    # Un seguimiento lo inicia el bot: no hay mensaje del cliente detras (ver agent/seguimiento.py)
+    if borrador.mensaje_cliente != "(seguimiento de posible venta)":
+        await guardar_mensaje(
+            borrador.telefono, "user", borrador.mensaje_cliente, imagen_id=contexto.get("imagen_id")
+        )
     # Si el bot habia decidido mandar fotos de producto, salen ahora, despues del texto.
     fotos_enviadas = await enviar_fotos(proveedor, borrador.telefono, contexto.get("fotos") or [], contexto)
     nota_fotos = nota_de_fotos(fotos_enviadas)
@@ -364,6 +366,60 @@ async def datos_ejemplos(request: Request):
             for e in ejemplos
         ],
     }
+
+
+@router.get("/datos/seguimientos")
+async def datos_seguimientos(request: Request):
+    """El interruptor del seguimiento de posibles ventas, y lo que hizo ultimamente."""
+    _verificar(request)
+    from sqlalchemy import select
+
+    from agent import seguimiento
+    from agent.memory import Mensaje, Seguimiento, async_session
+
+    async with async_session() as session:
+        filas = (
+            await session.execute(select(Seguimiento).order_by(Seguimiento.id.desc()).limit(60))
+        ).scalars().all()
+        items = []
+        for s in filas:
+            respondio = None
+            if s.estado == "enviado":
+                respondio = (
+                    await session.scalar(
+                        select(Mensaje.id)
+                        .where(Mensaje.telefono == s.telefono, Mensaje.role == "user", Mensaje.timestamp > s.creado_en)
+                        .limit(1)
+                    )
+                ) is not None
+            items.append(
+                {
+                    "telefono": s.telefono,
+                    "estado": s.estado,
+                    "motivo": s.motivo,
+                    "mensaje": s.mensaje,
+                    "respondio": respondio,
+                    "creado_en": s.creado_en.isoformat() if s.creado_en else None,
+                }
+            )
+    nombres = await obtener_nombres(list({i["telefono"] for i in items}))
+    for i in items:
+        i["nombre"] = nombres.get(i["telefono"], "")
+    return {"activo": await seguimiento.esta_activo(), "items": items}
+
+
+@router.post("/accion/seguimientos")
+async def accion_seguimientos(request: Request, cuerpo: dict = Body(default={})):
+    """Prende o apaga el seguimiento de posibles ventas."""
+    _verificar(request)
+    from agent import seguimiento
+
+    activo = cuerpo.get("activo")
+    if not isinstance(activo, bool):
+        raise HTTPException(status_code=400, detail="Falta 'activo' (true/false)")
+    await guardar_config(seguimiento.CLAVE_ACTIVO, "1" if activo else "0")
+    logger.info(f"Seguimiento de posibles ventas {'activado' if activo else 'desactivado'} desde el panel")
+    return {"ok": True, "activo": activo}
 
 
 @router.post("/accion/ejemplo")
@@ -794,6 +850,12 @@ PAGINA = """<!doctype html>
   .ejemplo-card .pregunta b, .ejemplo-card .respuesta b { font-size:10.5px; text-transform:uppercase;
     letter-spacing:.5px; color:var(--tenue); display:block; margin-bottom:2px; }
   .ejemplo-card .respuesta { white-space:pre-wrap; word-wrap:break-word; }
+  .btn-seg { border:0; border-radius:999px; padding:7px 14px; font-weight:700; font-size:12.5px;
+    cursor:pointer; font-family:inherit; background:var(--superficie); color:var(--suave); }
+  .btn-seg.on { background:var(--azul); color:#fff; }
+  .seg-estado { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+    padding:2px 8px; border-radius:999px; background:var(--superficie); color:var(--suave); margin-left:6px; }
+  .seg-estado.enviado, .seg-estado.borrador { background:var(--azul); color:#fff; }
   .ejemplo-card .borrar { margin-top:10px; background:none; border:1px solid var(--borde); color:var(--alerta);
     border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; }
   .restaurar-prompt { background:var(--app); color:var(--suave); border:1px solid var(--borde) !important; }
@@ -841,6 +903,7 @@ PAGINA = """<!doctype html>
       <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
       <button class="nav-btn" data-vista="prompt">⚙️ <span class="txt">Prompt</span></button>
       <button class="nav-btn" data-vista="ejemplos">⭐ <span class="txt">Ejemplos</span></button>
+      <button class="nav-btn" data-vista="seguimientos">🔔 <span class="txt">Seguimientos</span></button>
       <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
       <button class="nav-btn" id="btnTema" type="button" data-tema-btn onclick="alternarTema()">&#127769; <span class="txt">Modo oscuro</span></button>
       <a class="nav-btn" id="linkContactos" href="/panel/descargar/contactos.vcf" title="Descarga los contactos con nombre para agendarlos en el celular o en Google Contactos">👤 <span class="txt">Exportar contactos</span></a>
@@ -899,6 +962,20 @@ PAGINA = """<!doctype html>
     <div id="listaBorradores"><p class="vacio">Cargando…</p></div>
   </div>
 
+  <div class="vista-ejemplos" id="vistaSeguimientos">
+    <div class="prompt-header">
+      <h2>Seguimiento de posibles ventas</h2>
+      <button type="button" class="btn-seg" id="btnSeguimientos" onclick="alternarSeguimientos()">…</button>
+    </div>
+    <p class="prompt-ayuda">
+      Si un cliente consultó, el bot le pasó productos y no compró en la web, unas 20 horas después
+      (dentro de la ventana de 24 h de WhatsApp, sin costo de plantilla) el bot le escribe una sola vez
+      para ayudarlo a terminar la compra. Solo de 9 a 21 h, nunca a chats atendidos por una persona,
+      y como mucho uno por semana a cada cliente. Abajo ves lo que mandó y lo que descartó.
+    </p>
+    <div id="listaSeguimientos"><p class="vacio">Cargando…</p></div>
+  </div>
+
   <div class="vista-ejemplos" id="vistaEjemplos">
     <div class="prompt-header">
       <h2>Ejemplos del equipo</h2>
@@ -953,6 +1030,7 @@ const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorrador
 const vistaPrompt = $("vistaPrompt"), textoPrompt = $("textoPrompt"), pillPersonalizado = $("pillPersonalizado");
 const btnGuardarPrompt = $("btnGuardarPrompt"), btnRestaurarPrompt = $("btnRestaurarPrompt");
 const vistaEjemplos = $("vistaEjemplos"), listaEjemplos = $("listaEjemplos"), contadorEjemplos = $("contadorEjemplos");
+const vistaSeguimientos = $("vistaSeguimientos"), listaSeguimientos = $("listaSeguimientos"), btnSeguimientos = $("btnSeguimientos");
 
 let vista = "chats";        // chats | borradores | prompt | conversacion
 let telActual = null;
@@ -1185,6 +1263,51 @@ function pintarConversacion(msgs, alFinal) {
         </div>`;
       }).join("")
     : '<p class="vacio"><span class="icono">&#128172;</span>Sin mensajes guardados.</p>';
+}
+
+let seguimientosActivo = false;
+
+async function cargarSeguimientos() {
+  try {
+    const d = await pedir("/panel/datos/seguimientos");
+    seguimientosActivo = d.activo;
+    btnSeguimientos.textContent = d.activo ? "Activado" : "Desactivado";
+    btnSeguimientos.classList.toggle("on", d.activo);
+    const etiquetas = { enviado: "enviado", borrador: "en borrador", descartado: "descartado", error: "error" };
+    listaSeguimientos.innerHTML = d.items.length
+      ? d.items.map(s => `
+        <div class="ejemplo-card">
+          <div class="pregunta"><b>${escapar(s.nombre || s.telefono)} · ${fecha(s.creado_en)}<span class="seg-estado ${escapar(s.estado)}">${escapar(etiquetas[s.estado] || s.estado)}</span>${
+            s.respondio === true ? '<span class="seg-estado">respondió</span>' : ""}</b>${escapar(s.motivo || "")}</div>
+          ${s.mensaje ? '<div class="respuesta">' + escapar(s.mensaje) + "</div>" : ""}
+          <button type="button" class="borrar" style="color:var(--azul)" onclick="irAlChat('${escapar(s.telefono)}')">Ver chat</button>
+        </div>`).join("")
+      : '<p class="vacio"><span class="icono">&#128276;</span>Todavía no hay seguimientos.</p>';
+  } catch (e) {
+    listaSeguimientos.innerHTML = '<p class="vacio">' + escapar(e.message) + "</p>";
+  }
+}
+
+async function alternarSeguimientos() {
+  const nuevo = !seguimientosActivo;
+  if (nuevo && !confirm("¿Activar el seguimiento? El bot va a escribirles a clientes que consultaron y no compraron.")) return;
+  try {
+    await pedir("/panel/accion/seguimientos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activo: nuevo }),
+    });
+    aviso(nuevo ? "Seguimiento activado" : "Seguimiento desactivado");
+    cargarSeguimientos();
+  } catch (e) {
+    aviso(e.message, "error");
+  }
+}
+
+function irAlChat(telefono) {
+  const btn = document.querySelector('.nav-btn[data-vista="chats"]');
+  if (btn) btn.click();
+  setTimeout(() => abrirChat(telefono), 300);
 }
 
 async function cargarEjemplos() {
@@ -1433,10 +1556,11 @@ navLateral.addEventListener("click", (e) => {
   navLateral.querySelectorAll(".nav-btn[data-vista]").forEach(b => b.classList.remove("activa"));
   boton.classList.add("activa");
   vista = boton.dataset.vista;
-  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt" || vista === "ejemplos");
+  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt" || vista === "ejemplos" || vista === "seguimientos");
   if (vista !== "conversacion") cerrarChat();
   if (vista === "prompt" && !promptCargado) cargarPrompt().catch(e => aviso(e.message, "error"));
   if (vista === "ejemplos") cargarEjemplos();
+  if (vista === "seguimientos") cargarSeguimientos();
   refrescar();
 });
 
@@ -1454,6 +1578,7 @@ async function refrescar(forzarAbajo) {
       vistaBorradores.style.display = "flex";
       vistaPrompt.style.display = "none";
       vistaEjemplos.style.display = "none";
+      vistaSeguimientos.style.display = "none";
       const bs = await pedir("/panel/datos/borradores");
       globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
       const firma = JSON.stringify(bs.map(b => b.id));
@@ -1467,6 +1592,7 @@ async function refrescar(forzarAbajo) {
       panelPrincipal.style.display = "none";
       vistaBorradores.style.display = "none";
       vistaEjemplos.style.display = "none";
+      vistaSeguimientos.style.display = "none";
       vistaPrompt.style.display = "flex";
       return;
     }
@@ -1476,7 +1602,18 @@ async function refrescar(forzarAbajo) {
       panelPrincipal.style.display = "none";
       vistaBorradores.style.display = "none";
       vistaPrompt.style.display = "none";
+      vistaSeguimientos.style.display = "none";
       vistaEjemplos.style.display = "flex";
+      return;
+    }
+
+    if (vista === "seguimientos") {
+      // Como los ejemplos: se carga al entrar y despues de cada cambio.
+      panelPrincipal.style.display = "none";
+      vistaBorradores.style.display = "none";
+      vistaPrompt.style.display = "none";
+      vistaEjemplos.style.display = "none";
+      vistaSeguimientos.style.display = "flex";
       return;
     }
 
@@ -1484,6 +1621,7 @@ async function refrescar(forzarAbajo) {
     vistaBorradores.style.display = "none";
     vistaPrompt.style.display = "none";
     vistaEjemplos.style.display = "none";
+    vistaSeguimientos.style.display = "none";
 
     // La lista de chats se mantiene al dia siempre: en desktop queda visible al
     // lado del hilo, y en mobile es la pantalla de cuando no hay chat abierto.

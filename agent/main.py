@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
-from agent import catalogo
+from agent import catalogo, seguimiento
 from agent.envio_fotos import enviar_fotos, nota_de_fotos
 from agent.brain import (
     generar_respuesta,
@@ -119,10 +119,15 @@ async def lifespan(app: FastAPI):
     # y el servidor tiene que atender mensajes desde el primer segundo. Hasta que termine,
     # la busqueda por color cae a la busqueda en vivo.
     tarea_catalogo = asyncio.create_task(catalogo.mantener_actualizado())
+    # Seguimiento de posibles ventas (agent/seguimiento.py). Corre siempre, pero no hace
+    # nada mientras el interruptor del panel este apagado, que es como arranca.
+    tarea_seguimiento = asyncio.create_task(seguimiento.mantener_activo(proveedor)) if proveedor else None
 
     yield
 
     tarea_catalogo.cancel()
+    if tarea_seguimiento:
+        tarea_seguimiento.cancel()
 
 
 app = FastAPI(title="AgentKit — WhatsApp AI Agent", version="2.0.0", lifespan=lifespan)
