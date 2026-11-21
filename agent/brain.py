@@ -353,6 +353,47 @@ async def _bloque_ejemplos() -> str:
     return "\n".join(partes)
 
 
+CLAVE_TENDENCIAS = "guia_tendencias"
+ARCHIVO_TENDENCIAS = "config/guia_tendencias.md"
+MAX_TENDENCIAS = 12000  # se suma al prompt de CADA mensaje: que no crezca sin control
+
+
+def guia_tendencias_base() -> str:
+    """La guia del repo (config/guia_tendencias.md), la que vale si nadie la edito desde el panel."""
+    try:
+        with open(ARCHIVO_TENDENCIAS, encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+async def obtener_guia_tendencias() -> str:
+    """
+    La guia de estilo y tendencias en uso: la editada desde el panel si existe (vacia =
+    apagada a proposito), si no la del repo.
+    """
+    guardada = await obtener_config(CLAVE_TENDENCIAS)
+    return (guardada if guardada is not None else guia_tendencias_base()).strip()
+
+
+async def _bloque_tendencias() -> str:
+    """La guia de tendencias formateada para el system prompt. Si falla, el bot sigue sin ella."""
+    try:
+        guia = await obtener_guia_tendencias()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"No se pudo leer la guia de tendencias: {e}")
+        return ""
+    if not guia:
+        return ""
+    return (
+        "\n\n## Guía de estilo y tendencias de la temporada\n"
+        "La armó el equipo de PAMPA SHOP para que asesores con criterio actual. Son "
+        "tendencias, no stock: recomendá solo productos que devuelvan las herramientas, y "
+        "si algo de esta guía choca con tus reglas de arriba, mandan las reglas. Usala con "
+        "tus palabras, sin recitarla.\n\n" + guia[:MAX_TENDENCIAS]
+    )
+
+
 async def obtener_system_prompt_activo() -> str:
     """
     El system prompt que se usa de verdad: el override guardado desde el panel si
@@ -586,7 +627,7 @@ async def generar_respuesta(
     if not imagen and (not mensaje or len(mensaje.strip()) < 2):
         return obtener_mensaje_fallback(), False, None, []
 
-    system_prompt = await obtener_system_prompt_activo() + await _bloque_ejemplos()
+    system_prompt = await obtener_system_prompt_activo() + await _bloque_tendencias() + await _bloque_ejemplos()
     mensajes: list[dict] = [{"role": m["role"], "content": m["content"]} for m in historial]
 
     contenido_usuario: list[dict] = []

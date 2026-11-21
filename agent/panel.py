@@ -422,6 +422,36 @@ async def accion_seguimientos(request: Request, cuerpo: dict = Body(default={}))
     return {"ok": True, "activo": activo}
 
 
+@router.get("/datos/tendencias")
+async def datos_tendencias(request: Request):
+    """La guia de estilo y tendencias que usa el bot, y si es la del repo o una editada."""
+    _verificar(request)
+    from agent.brain import CLAVE_TENDENCIAS, MAX_TENDENCIAS, obtener_guia_tendencias
+
+    return {
+        "texto": await obtener_guia_tendencias(),
+        "editada": (await obtener_config(CLAVE_TENDENCIAS)) is not None,
+        "maximo": MAX_TENDENCIAS,
+    }
+
+
+@router.post("/accion/tendencias")
+async def accion_tendencias(request: Request, cuerpo: dict = Body(default={})):
+    """Guarda la guia de tendencias. Vacia = el bot asesora sin guia."""
+    _verificar(request)
+    from agent.brain import CLAVE_TENDENCIAS, MAX_TENDENCIAS
+
+    texto = cuerpo.get("texto")
+    if not isinstance(texto, str):
+        raise HTTPException(status_code=400, detail="Falta el texto de la guia")
+    texto = texto.strip()
+    if len(texto) > MAX_TENDENCIAS:
+        raise HTTPException(status_code=400, detail=f"La guia no puede pasar de {MAX_TENDENCIAS} caracteres")
+    await guardar_config(CLAVE_TENDENCIAS, texto)
+    logger.info("Guia de tendencias actualizada desde el panel")
+    return {"ok": True}
+
+
 @router.post("/accion/ejemplo")
 async def accion_ejemplo(request: Request, cuerpo: dict = Body(default={})):
     """
@@ -903,6 +933,7 @@ PAGINA = """<!doctype html>
       <button class="nav-btn" data-vista="borradores">📝 <span class="txt">Por aprobar</span><span class="globo" id="globo" style="display:none">0</span></button>
       <button class="nav-btn" data-vista="prompt">⚙️ <span class="txt">Prompt</span></button>
       <button class="nav-btn" data-vista="ejemplos">⭐ <span class="txt">Ejemplos</span></button>
+      <button class="nav-btn" data-vista="tendencias">👗 <span class="txt">Tendencias</span></button>
       <button class="nav-btn" data-vista="seguimientos">🔔 <span class="txt">Seguimientos</span></button>
       <a class="nav-btn" id="linkMetricas" href="#">📊 <span class="txt">Métricas</span></a>
       <button class="nav-btn" id="btnTema" type="button" data-tema-btn onclick="alternarTema()">&#127769; <span class="txt">Modo oscuro</span></button>
@@ -989,6 +1020,23 @@ PAGINA = """<!doctype html>
     <div id="listaEjemplos"><p class="vacio">Cargando…</p></div>
   </div>
 
+  <div class="vista-prompt" id="vistaTendencias">
+    <div class="prompt-header">
+      <h2>Guía de estilo y tendencias</h2>
+      <span class="prompt-pill" id="contadorTendencias"></span>
+    </div>
+    <p class="prompt-ayuda">
+      El bot la usa para asesorar con criterio de moda actual: colores de la temporada, qué
+      calzado va con cada prenda, qué es tendencia. Actualizala cada temporada. No hace falta
+      nombrar productos: el bot siempre recomienda lo que hay en stock. Si la dejás vacía, asesora sin guía.
+    </p>
+    <textarea class="txt-prompt" id="textoTendencias" placeholder="Cargando…" spellcheck="false"
+      oninput="contarTendencias()"></textarea>
+    <div class="prompt-acciones">
+      <button class="guardar-prompt" id="btnGuardarTendencias" onclick="guardarTendencias()">Guardar guía</button>
+    </div>
+  </div>
+
   <div class="vista-prompt" id="vistaPrompt">
     <div class="prompt-header">
       <h2>Comportamiento del agente</h2>
@@ -1030,6 +1078,7 @@ const vistaBorradores = $("vistaBorradores"), listaBorradores = $("listaBorrador
 const vistaPrompt = $("vistaPrompt"), textoPrompt = $("textoPrompt"), pillPersonalizado = $("pillPersonalizado");
 const btnGuardarPrompt = $("btnGuardarPrompt"), btnRestaurarPrompt = $("btnRestaurarPrompt");
 const vistaEjemplos = $("vistaEjemplos"), listaEjemplos = $("listaEjemplos"), contadorEjemplos = $("contadorEjemplos");
+const vistaTendencias = $("vistaTendencias"), textoTendencias = $("textoTendencias"), contadorTendencias = $("contadorTendencias");
 const vistaSeguimientos = $("vistaSeguimientos"), listaSeguimientos = $("listaSeguimientos"), btnSeguimientos = $("btnSeguimientos");
 
 let vista = "chats";        // chats | borradores | prompt | conversacion
@@ -1263,6 +1312,44 @@ function pintarConversacion(msgs, alFinal) {
         </div>`;
       }).join("")
     : '<p class="vacio"><span class="icono">&#128172;</span>Sin mensajes guardados.</p>';
+}
+
+let maxTendencias = 12000;
+
+function contarTendencias() {
+  contadorTendencias.textContent = textoTendencias.value.length + " / " + maxTendencias;
+  contadorTendencias.classList.add("mostrar");
+}
+
+async function cargarTendencias() {
+  try {
+    const d = await pedir("/panel/datos/tendencias");
+    maxTendencias = d.maximo;
+    textoTendencias.value = d.texto;
+    contarTendencias();
+  } catch (e) {
+    aviso(e.message, "error");
+  }
+}
+
+async function guardarTendencias() {
+  const texto = textoTendencias.value.trim();
+  if (texto.length > maxTendencias) { aviso("La guía es demasiado larga", "error"); return; }
+  if (!texto && !confirm("La guía está vacía: el bot va a asesorar sin ella. ¿Guardar igual?")) return;
+  const btn = $("btnGuardarTendencias");
+  btn.disabled = true;
+  try {
+    await pedir("/panel/accion/tendencias", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto }),
+    });
+    aviso("Guía guardada — ya la usa el bot");
+  } catch (e) {
+    aviso(e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 let seguimientosActivo = false;
@@ -1556,11 +1643,12 @@ navLateral.addEventListener("click", (e) => {
   navLateral.querySelectorAll(".nav-btn[data-vista]").forEach(b => b.classList.remove("activa"));
   boton.classList.add("activa");
   vista = boton.dataset.vista;
-  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt" || vista === "ejemplos" || vista === "seguimientos");
+  app.classList.toggle("vista-secundaria", vista === "borradores" || vista === "prompt" || vista === "ejemplos" || vista === "seguimientos" || vista === "tendencias");
   if (vista !== "conversacion") cerrarChat();
   if (vista === "prompt" && !promptCargado) cargarPrompt().catch(e => aviso(e.message, "error"));
   if (vista === "ejemplos") cargarEjemplos();
   if (vista === "seguimientos") cargarSeguimientos();
+  if (vista === "tendencias") cargarTendencias();
   refrescar();
 });
 
@@ -1579,6 +1667,7 @@ async function refrescar(forzarAbajo) {
       vistaPrompt.style.display = "none";
       vistaEjemplos.style.display = "none";
       vistaSeguimientos.style.display = "none";
+      vistaTendencias.style.display = "none";
       const bs = await pedir("/panel/datos/borradores");
       globo.textContent = bs.length; globo.style.display = bs.length ? "inline-block" : "none";
       const firma = JSON.stringify(bs.map(b => b.id));
@@ -1593,6 +1682,7 @@ async function refrescar(forzarAbajo) {
       vistaBorradores.style.display = "none";
       vistaEjemplos.style.display = "none";
       vistaSeguimientos.style.display = "none";
+      vistaTendencias.style.display = "none";
       vistaPrompt.style.display = "flex";
       return;
     }
@@ -1603,6 +1693,7 @@ async function refrescar(forzarAbajo) {
       vistaBorradores.style.display = "none";
       vistaPrompt.style.display = "none";
       vistaSeguimientos.style.display = "none";
+      vistaTendencias.style.display = "none";
       vistaEjemplos.style.display = "flex";
       return;
     }
@@ -1613,7 +1704,19 @@ async function refrescar(forzarAbajo) {
       vistaBorradores.style.display = "none";
       vistaPrompt.style.display = "none";
       vistaEjemplos.style.display = "none";
+      vistaTendencias.style.display = "none";
       vistaSeguimientos.style.display = "flex";
+      return;
+    }
+
+    if (vista === "tendencias") {
+      // Como el prompt: se carga al entrar, no cada 4 s (pisaria lo que se esta tipeando).
+      panelPrincipal.style.display = "none";
+      vistaBorradores.style.display = "none";
+      vistaPrompt.style.display = "none";
+      vistaEjemplos.style.display = "none";
+      vistaSeguimientos.style.display = "none";
+      vistaTendencias.style.display = "flex";
       return;
     }
 
@@ -1622,6 +1725,7 @@ async function refrescar(forzarAbajo) {
     vistaPrompt.style.display = "none";
     vistaEjemplos.style.display = "none";
     vistaSeguimientos.style.display = "none";
+    vistaTendencias.style.display = "none";
 
     // La lista de chats se mantiene al dia siempre: en desktop queda visible al
     // lado del hilo, y en mobile es la pantalla de cuando no hay chat abierto.
