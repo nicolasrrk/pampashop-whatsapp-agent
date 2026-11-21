@@ -150,7 +150,7 @@ async def _buscar_productos_crudos(consulta: str) -> list[dict] | None:
     return productos
 
 
-async def buscar_productos_tienda_nube(consulta: str, color: str | None = None) -> str:
+async def buscar_productos_tienda_nube(consulta: str, color: str | None = None, talle: str | None = None) -> str:
     """
     Busca productos en el catalogo real de PAMPA SHOP por nombre, tag o SKU.
 
@@ -161,39 +161,40 @@ async def buscar_productos_tienda_nube(consulta: str, color: str | None = None) 
 
     Con 'color', filtra por las variantes de color reales (con stock) de todo el catalogo:
     el color no esta en el nombre del producto, asi que la busqueda por texto sola no puede.
+    'color' acepta varios separados por coma ("dorado, plateado, nude"). Con 'talle', solo
+    trae productos con stock en ese talle (y en alguno de esos colores, si se pidieron).
     """
     if not TIENDANUBE_STORE_ID or not TIENDANUBE_ACCESS_TOKEN:
         return "No puedo consultar el catalogo ahora mismo: falta la conexion con Tienda Nube."
 
     color = (color or "").strip() or None
+    talle = (str(talle or "")).strip() or None
     nota = ""
 
-    if color:
+    if color or talle:
         # Import local: agent/catalogo.py importa este modulo, asi que importarlo arriba
         # armaria un ciclo.
         from agent import catalogo
 
-        productos = catalogo.buscar(consulta, color)
+        productos = catalogo.buscar(consulta, color, talle=talle)
+        colores = separar_colores(color)
         if productos is None:
             # La copia en memoria todavia esta cargando (recien arranco el servidor): se usa
             # la busqueda en vivo y se filtra por color solo entre esos resultados.
             en_vivo = await _buscar_productos_crudos(consulta)
             if en_vivo is None:
                 return "No pude consultar el catalogo ahora mismo. Probemos de nuevo en un momento."
-            patron = re.compile(rf"\b{re.escape(_normalizar(color))}")
-            productos = [
-                p
-                for p in en_vivo
-                if any(
-                    _variante_disponible(v) and patron.search(_normalizar(_valor_variante(p, v, "color")))
-                    for v in p.get("variants") or []
-                )
-            ]
+            productos = [p for p in en_vivo if variantes_que_cumplen(p, colores, talle)]
             nota = "\n(Busqueda parcial: el catalogo completo se esta cargando; puede haber mas opciones en ese color.)"
         if not productos:
-            return f"No encontre productos que coincidan con '{consulta}' en color {color} con stock en el catalogo."
-        # Las lineas muestran los colores con stock; aca se agregan los talles del color pedido.
-        lineas = [_linea_producto(p) + _talles_del_color(p, color) for p in productos]
+            return (
+                f"No encontre productos que coincidan con '{consulta}'"
+                + (f" en color {color}" if color else "")
+                + (f" con stock en talle {talle}" if talle else " con stock")
+                + " en el catalogo."
+            )
+        # Las lineas muestran los colores con stock; aca se agrega lo que cumple el filtro pedido.
+        lineas = [_linea_producto(p) + _detalle_del_filtro(p, colores, talle) for p in productos]
         return (
             "\n".join(lineas)
             + "\n(Colores y stock segun el catalogo guardado, que se actualiza cada pocos minutos: "
@@ -211,16 +212,69 @@ async def buscar_productos_tienda_nube(consulta: str, color: str | None = None) 
     return "\n".join(_linea_producto(p) for p in productos)
 
 
-def _talles_del_color(p: dict, color: str) -> str:
-    """' | talles con stock en <color>: 38, 39' para el color pedido, o '' si no hay datos de talle."""
-    patron = re.compile(rf"\b{re.escape(_normalizar(color))}")
-    talles = [
-        _valor_variante(p, v, "talle")
-        for v in p.get("variants") or []
-        if _variante_disponible(v) and patron.search(_normalizar(_valor_variante(p, v, "color")))
-    ]
-    talles = [t for t in dict.fromkeys(talles) if t]
-    return f" | talles con stock en {color}: {', '.join(talles)}" if talles else ""
+# Los clientes (y el modelo) nombran los colores como en una revista, pero en Tienda Nube
+# estan cargados como los carga cada proveedor: "plateado" no encontraba nada porque los
+# productos dicen "Plata". Cada grupo son raices equivalentes: si el color pedido empieza
+# con alguna, se buscan todas (ej. "plateado" -> plat|silver, que matchea "Plata").
+_COLORES_EQUIVALENTES = [
+    ("dorad", "oro", "gold"),
+    ("plat", "silver"),
+    ("nude", "beige", "natural", "piel"),
+    ("champ",),
+    ("bordo", "bordeaux", "vino"),
+    ("marron", "suela", "camel", "tabaco", "habano", "cafe"),
+    ("negr", "black"),
+    ("blanc", "white"),
+]
+
+
+def separar_colores(color: str | None) -> list[str]:
+    """'dorado, plateado o nude' -> ['dorado', 'plateado', 'nude'] (en singular simple)."""
+    partes = re.split(r",|/|\by\b|\bo\b", color or "")
+    salida = []
+    for parte in partes:
+        c = parte.strip()
+        if c:
+            salida.append(c[:-1] if len(c) > 4 and c.endswith("s") else c)
+    return salida
+
+
+def _talle_igual(a: str, b: str) -> bool:
+    return _normalizar(a).replace(",", ".") == _normalizar(b).replace(",", ".")
+
+
+def variantes_que_cumplen(p: dict, colores: list[str], talle: str | None) -> list[dict]:
+    """Variantes con stock de alguno de esos colores (o de cualquiera si no hay) y de ese talle (si hay)."""
+    patrones = [patron_de_color(c) for c in colores]
+    salida = []
+    for v in p.get("variants") or []:
+        if not _variante_disponible(v):
+            continue
+        if patrones and not any(pt.search(_normalizar(_valor_variante(p, v, "color"))) for pt in patrones):
+            continue
+        if talle and not _talle_igual(_valor_variante(p, v, "talle"), talle):
+            continue
+        salida.append(v)
+    return salida
+
+
+def _detalle_del_filtro(p: dict, colores: list[str], talle: str | None) -> str:
+    """Lo que cumple el filtro pedido: los talles del color, o los colores que hay en el talle."""
+    variantes = variantes_que_cumplen(p, colores, talle)
+    if talle:
+        en_talle = [c for c in dict.fromkeys(_valor_variante(p, v, "color") for v in variantes) if c]
+        return f" | en talle {talle} hay stock en: {', '.join(en_talle)}" if en_talle else ""
+    talles = [t for t in dict.fromkeys(_valor_variante(p, v, "talle") for v in variantes) if t]
+    return f" | talles con stock en {', '.join(colores)}: {', '.join(talles)}" if talles else ""
+
+
+def patron_de_color(color: str) -> "re.Pattern":
+    """Regex que reconoce el color pedido y sus equivalentes al principio de una palabra."""
+    base = _normalizar(color)
+    for grupo in _COLORES_EQUIVALENTES:
+        if any(base.startswith(raiz) for raiz in grupo):
+            return re.compile(r"\b(?:" + "|".join(re.escape(r) for r in grupo) + ")")
+    return re.compile(rf"\b{re.escape(base)}")
 
 
 def _tiene_stock(p: dict) -> bool:

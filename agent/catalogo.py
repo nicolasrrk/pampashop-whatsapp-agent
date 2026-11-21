@@ -212,21 +212,12 @@ def _tokens(consulta: str, excluir: set[str]) -> list[str]:
     return list(dict.fromkeys(salida))
 
 
-def _variantes_del_color(p: dict, color: str) -> list[dict]:
-    """Variantes con stock cuyo color empieza con 'color' o lo contiene como palabra ('azul' -> 'Azul Marino')."""
-    patron = re.compile(rf"\b{re.escape(color)}")
-    return [
-        v
-        for v in p["variants"]
-        if _variante_disponible(v) and patron.search(_norm(_valor_variante(p, v, "color")))
-    ]
-
-
-def buscar(consulta: str, color: str | None = None, limite: int = 10) -> list[dict] | None:
+def buscar(consulta: str, color: str | None = None, limite: int = 10, talle: str | None = None) -> list[dict] | None:
     """
     Productos de la copia que coinciden con 'consulta' (palabras en nombre, marca, etiquetas
-    o descripcion) y, si se pide, tienen ese color CON STOCK. None si la copia todavia no
-    cargo, para que el llamador use la busqueda en vivo.
+    o descripcion) y, si se pide, tienen ese color (o alguno de varios, separados por coma) y
+    ese talle CON STOCK. None si la copia todavia no cargo, para que el llamador use la
+    busqueda en vivo.
 
     Se piden al menos el 60% de las palabras: el cliente habla en lenguaje natural y el
     catalogo no siempre usa las mismas (ej. "taco alto" vs "taco aguja").
@@ -234,9 +225,10 @@ def buscar(consulta: str, color: str | None = None, limite: int = 10) -> list[di
     if not _productos:
         return None
 
-    color_norm = _norm(color).strip() if color else None
-    color_norm = color_norm[:-1] if color_norm and len(color_norm) > 4 and color_norm.endswith("s") else color_norm
-    palabras = _tokens(consulta, {color_norm} if color_norm else set())
+    from agent.tools import separar_colores, variantes_que_cumplen
+
+    colores = separar_colores(color)
+    palabras = _tokens(consulta, {_norm(c).strip() for c in colores})
     minimo = max(1, math.ceil(0.6 * len(palabras))) if palabras else 0
 
     resultados = []
@@ -244,10 +236,8 @@ def buscar(consulta: str, color: str | None = None, limite: int = 10) -> list[di
         puntaje = sum(1 for w in palabras if w in p["_texto"])
         if palabras and puntaje < minimo:
             continue
-        if color_norm:
-            variantes = _variantes_del_color(p, color_norm)
-            if not variantes:
-                continue
+        if (colores or talle) and not variantes_que_cumplen(p, colores, talle):
+            continue
         resultados.append((puntaje, p))
 
     resultados.sort(key=lambda x: (-x[0], _texto_o_vacio(x[1].get("name"))))

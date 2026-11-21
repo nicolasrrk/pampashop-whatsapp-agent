@@ -159,15 +159,18 @@ TOOLS = [
             "de dar cualquier dato de talle, precio o stock. "
             "Buscá UNA sola vez por producto, con el termino mas simple que lo "
             "identifique (la marca y el tipo de calzado alcanzan: 'zapatilla moleca'). "
-            "NO agregues el talle a la busqueda, porque el buscador matchea por nombre "
-            "y el talle no esta en el nombre: para saber si hay un talle usá "
-            "obtener_detalle_producto sobre el id que ya encontraste. "
+            "NO pongas el talle dentro de 'consulta' (el buscador matchea por nombre y el "
+            "talle no esta en el nombre): si el cliente ya te dijo su talle, pasalo en el "
+            "parametro 'talle' y solo vuelven modelos con stock en ese talle. "
             "Si el cliente pide un COLOR, pasalo en el parametro 'color' (no lo pongas "
             "dentro de 'consulta'): el color no esta en el nombre del producto sino en "
             "las variantes, y con 'color' se revisa todo el catalogo y se devuelven solo "
             "los modelos que lo tienen con stock, junto con los talles. Podes buscar "
             "solo por tipo y color, sin marca (ej: consulta 'sandalia taco alto', color "
-            "'azul') para encontrar opciones en cualquier marca. "
+            "'azul') para encontrar opciones en cualquier marca. Para asesorar un look "
+            "podes pasar varios colores juntos separados por coma (color 'dorado, "
+            "plateado, nude') en UNA sola busqueda; los colores equivalentes (plateado/"
+            "plata, dorado/oro, nude/beige) se buscan solos. "
             "Si una busqueda no trae lo que esperabas, NO la repitas con variantes "
             "parecidas: contestale al cliente con lo que encontraste."
         ),
@@ -180,7 +183,11 @@ TOOLS = [
                 },
                 "color": {
                     "type": "string",
-                    "description": "Opcional. Color pedido por el cliente (ej: 'azul', 'negro', 'nude'). Solo trae modelos que lo tengan con stock.",
+                    "description": "Opcional. Color o colores separados por coma (ej: 'azul', 'dorado, plateado'). Solo trae modelos que tengan alguno con stock.",
+                },
+                "talle": {
+                    "type": "string",
+                    "description": "Opcional. Talle del cliente (ej: '38'). Solo trae modelos con stock en ese talle (y en el color, si se pidio).",
                 },
             },
             "required": ["consulta"],
@@ -289,7 +296,7 @@ TOOLS = [
 # como escalado, y el telefono no puede salir de lo que diga el modelo — sale del
 # backend. Se maneja aparte, en el propio loop de generar_respuesta.
 _HERRAMIENTAS = {
-    "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"], i.get("color")),
+    "buscar_productos_tienda_nube": lambda i: buscar_productos_tienda_nube(i["consulta"], i.get("color"), i.get("talle")),
     "comparar_con_fotos_del_catalogo": lambda i: comparar_con_fotos_del_catalogo(i["consultas"]),
     "consultar_guia_talles": lambda i: consultar_guia_talles(i["marca"]),
     "obtener_detalle_producto": lambda i: obtener_detalle_producto(i["product_id"]),
